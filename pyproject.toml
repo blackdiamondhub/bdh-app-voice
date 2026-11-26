@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bdh-app-voice"
+version = "0.1.0b1"
+description = "Black Diamond Hub app: wake-word detection for the wall screens"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+    "bdh-sdk>=0.43,<1",
+    "numpy>=1.26",
+    "onnxruntime>=1.20",
+]
+
+[project.urls]
+Source = "https://github.com/blackdiamondhub/bdh-app-voice"
+
+[project.entry-points."blackdiamondhub.plugins"]
+voice = "voice.plugin:spec"
+
+[tool.setuptools.packages.find]
+include = ["voice", "voice.*"]
+
+[tool.setuptools.package-data]
+voice = [
+    "models/*.onnx",
+    "templates/**/*",
+    "tests/fixtures/*.wav",
+]

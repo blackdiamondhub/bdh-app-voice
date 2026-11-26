@@ -1,0 +1,120 @@
+{% extends 'hub_settings/_layout.html' %}
+
+{% block title %}Voice{% endblock %}
+
+{% block section %}
+<style>
+    .vo-sec { margin: 22px 4px 10px; color: var(--mut); font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+    .vo-tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+    .vo-tbl th { text-align: left; color: var(--mut); font-weight: 500; font-size: 13px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .vo-tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .vo-tbl tr:last-child td { border-bottom: 0; }
+    .vo-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .vo-msg { color: var(--mut); padding: 14px 12px; font-size: 14px; }
+    .vo-bar { display: inline-block; width: 70px; height: 7px; border-radius: 4px; background: rgba(255,255,255,.08); vertical-align: middle; margin-right: 8px; overflow: hidden; }
+    .vo-bar i { display: block; height: 100%; background: var(--ok); }
+    .vo-hot { color: var(--ok); font-weight: 600; }
+    .vo-off { color: var(--red); }
+    .vo-play { padding: 5px 12px; font-size: 13px; }
+    #vo-status { color: var(--mut); font-size: 14px; }
+</style>
+
+<div class="hst-head">
+    <div>
+        <h2>Voice</h2>
+        <p id="vo-summary"></p>
+    </div>
+    <div class="act"><span id="vo-status" aria-live="polite"></span></div>
+</div>
+
+<div class="vo-sec">Screens listening</div>
+<div class="hst-card"><div id="vo-screens"></div></div>
+
+<div class="vo-sec">Last 50 detections</div>
+<div class="hst-card"><div id="vo-detections"></div></div>
+
+<audio id="vo-audio" preload="none"></audio>
+{{ data|json_script:"vo-data" }}
+<script>
+(function () {
+    var STATUS_URL = "{% url 'voice_status_json' %}";
+    var CLIP_URL = "{% url 'voice_clip' 'CLIP' %}";
+    var audio = document.getElementById('vo-audio');
+    var playing = '';
+
+    function esc(s) {
+        return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+            return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+        });
+    }
+
+    function summary(d) {
+        var el = document.getElementById('vo-summary');
+        if (!d.listen) {
+            el.innerHTML = '<span class="vo-off">Listening is off.</span> Turn on “Listen for the wake word” in the app’s settings.';
+            return;
+        }
+        el.textContent = 'Listening for “' + d.word_label + '” at ' + Math.round(d.threshold * 100) +
+            '%. Clips are ' + (d.save_clips ? 'saved' : 'not saved') + '. Times are ' + d.timezone + '.';
+    }
+
+    function screens(d) {
+        var el = document.getElementById('vo-screens');
+        if (!d.screens.length) { el.innerHTML = '<div class="vo-msg">No screens are connected.</div>'; return; }
+        var rows = d.screens.map(function (s) {
+            var pct = Math.max(0, Math.min(100, (s.level + 80) / 80 * 100));
+            var hot = s.peak >= d.threshold ? ' class="num vo-hot"' : ' class="num"';
+            return '<tr><td>' + esc(s.display) + (s.display !== s.ip ? ' <small style="color:var(--mut)">' + esc(s.ip) + '</small>' : '') +
+                '</td><td>' + esc(s.version || '—') + '</td><td>' + esc(s.since_local) +
+                '</td><td class="num"><span class="vo-bar"><i style="width:' + pct.toFixed(0) + '%"></i></span>' +
+                s.level.toFixed(0) + ' dBFS</td><td' + hot + '>' + s.peak.toFixed(2) + '</td></tr>';
+        });
+        el.innerHTML = '<table class="vo-tbl"><thead><tr><th>Screen</th><th>Kiosk</th><th>Connected since</th>' +
+            '<th class="num">Mic level</th><th class="num">Peak score (10 s)</th></tr></thead><tbody>' +
+            rows.join('') + '</tbody></table>';
+    }
+
+    function detections(d) {
+        var el = document.getElementById('vo-detections');
+        if (!d.detections.length) { el.innerHTML = '<div class="vo-msg">Nothing heard yet.</div>'; return; }
+        var rows = d.detections.map(function (x) {
+            var play = x.has_clip
+                ? '<button type="button" class="hst-btn ghost vo-play" data-clip="' + esc(x.clip) + '">' +
+                  (playing === x.clip ? '■ Stop' : '▶ Play') + '</button>'
+                : '<small style="color:var(--mut)">—</small>';
+            return '<tr><td>' + esc(x.at_local) + '</td><td>' + esc(x.screen) + '</td><td>' + esc(x.label) +
+                '</td><td class="num">' + Number(x.score).toFixed(2) + '</td><td class="num">' + play + '</td></tr>';
+        });
+        el.innerHTML = '<table class="vo-tbl"><thead><tr><th>Time</th><th>Screen</th><th>Word</th>' +
+            '<th class="num">Score</th><th class="num">Clip</th></tr></thead><tbody>' + rows.join('') + '</tbody></table>';
+    }
+
+    function draw(d) { summary(d); screens(d); detections(d); }
+
+    document.getElementById('vo-detections').addEventListener('click', function (e) {
+        var btn = e.target.closest('[data-clip]');
+        if (!btn) return;
+        var name = btn.getAttribute('data-clip');
+        if (playing === name) { audio.pause(); playing = ''; }
+        else {
+            audio.src = CLIP_URL.replace('CLIP', encodeURIComponent(name));
+            audio.play();
+            playing = name;
+        }
+        refresh();
+    });
+    audio.addEventListener('ended', function () { playing = ''; refresh(); });
+
+    var status = document.getElementById('vo-status');
+    function refresh() {
+        fetch(STATUS_URL, {credentials: 'same-origin', cache: 'no-store'})
+            .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+            .then(function (d) { status.textContent = ''; draw(d); })
+            .catch(function () { status.textContent = 'Offline'; });
+    }
+
+    draw(JSON.parse(document.getElementById('vo-data').textContent));
+    setInterval(function () { if (!document.hidden) refresh(); }, 2000);
+})();
+</script>
+{% endblock %}
