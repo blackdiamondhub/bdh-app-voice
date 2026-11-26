@@ -40,9 +40,20 @@ class Config:
     max_seconds: float = DEFAULT_MAX_SECONDS
     follow_up_seconds: float = DEFAULT_FOLLOW_UP
     instructions: str = ""
+    # "<screen ip or name>=<room>; ..." or just "<room>" for every screen.
+    screen_rooms: str = ""
 
 
-def _bool(key, default):
+def room_for(cfg, *screen_ids):
+    """The room a screen is in, from the "Where the screens are" setting, or ""."""
+    fallback = ""
+    for part in cfg.screen_rooms.replace("\n", ";").split(";"):
+        key, sep, room = part.partition("=")
+        if not sep:
+            fallback = fallback or key.strip()
+        elif key.strip() and key.strip() in screen_ids:
+            return room.strip()
+    return fallback
     try:
         return as_bool(app_setting(APP_ID, key, default))
     except ValueError:
@@ -76,6 +87,7 @@ def load():
         max_seconds=_int("max_seconds", DEFAULT_MAX_SECONDS, 10, 600),
         follow_up_seconds=_int("follow_up_seconds", DEFAULT_FOLLOW_UP, 2, 60),
         instructions=str(app_setting(APP_ID, "instructions", "") or "").strip(),
+        screen_rooms=str(app_setting(APP_ID, "screen_rooms", "") or "").strip(),
     )
 
 

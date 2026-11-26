@@ -502,6 +502,16 @@ class HelperTests(SimpleTestCase):
         self.assertIn("Thursday, December 24, 2026, 1:05 PM", text)
         self.assertTrue(text.endswith("Checkout is at 10."))
 
+    def test_screen_room(self):
+        cfg = config.Config(screen_rooms="10.0.0.5=the kitchen; 10.0.0.6 = the great room")
+        self.assertEqual(config.room_for(cfg, "10.0.0.6", "Lobby"), "the great room")
+        self.assertEqual(config.room_for(cfg, "10.0.0.9"), "")
+        self.assertEqual(config.room_for(config.Config(screen_rooms="the great room"), "10.0.0.9"),
+                         "the great room")
+        self.assertIn("This screen is in the great room.",
+                      assistant.instructions(cfg, room="the great room"))
+        self.assertNotIn("This screen is in", assistant.instructions(cfg))
+
     def test_confirm_tools_say_so(self):
         [t] = assistant.function_tools([{"name": "a", "title": "Unlock", "description": "Unlock the door.",
                                          "parameters": {"type": "object", "properties": {}},

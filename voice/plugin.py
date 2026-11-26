@@ -36,6 +36,10 @@ spec = PluginSpec(
                 help="How long to keep listening after a reply before the conversation ends."),
         Setting("instructions", "Extra instructions", STR, "",
                 help="Added to the assistant's instructions, e.g. house rules or local tips."),
+        Setting("screen_rooms", "Where the screens are", STR, "",
+                help="So \"here\" means something, e.g. \"the great room on the main floor, by the "
+                     "Living Room Fireplace\". Several screens: \"192.168.10.195=great room; "
+                     "192.168.10.196=kitchen\"."),
     ),
     # Admins only: connected screens, live levels and recent detections.
     settings_pages=(
