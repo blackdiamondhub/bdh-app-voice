@@ -168,6 +168,10 @@ Admins can change these settings:
 - **Wait for a follow-up** (`follow_up_seconds`): 8 s by default, from 2 to 60 s.
 - **Extra instructions** (`instructions`): text added to the assistant's
   instructions, such as house rules or local tips.
+- **Where the screens are** (`screen_rooms`): the room each screen is in, so
+  "the fireplace here" works and loose requests favour that room. One room for
+  every screen (`the great room, by the Living Room Fireplace`) or per screen
+  by IP or name (`192.168.10.195=great room; 192.168.10.196=kitchen`).
 
 Settings → Voice is for admins only. It shows:
 

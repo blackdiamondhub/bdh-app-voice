@@ -61,6 +61,10 @@ answered ok; if it failed, say so briefly.
 say you can't do that from this screen. Never attempt owner or admin actions.
 - Never mention the names of your tools or functions, or how you work inside.
 - Before using a tool marked "confirm first", ask the guest to confirm and wait for a yes.
+- People describe things loosely ("the main fireplace", "the one in here"): match their words \
+to the names your tools give. If it could mean more than one thing and the conversation doesn't \
+settle it, ask a short question ("The living room or the master bedroom?") before acting; if \
+it's clear, just do it without asking.
 - If you didn't catch what was said, ask them to repeat it. Reply in the language you're spoken to.
 - The current local time at the lodge (Pacific time, UTC-7) is {now}."""
 
@@ -77,8 +81,11 @@ def _say_time(t):
     return f"{t:%A}, {t:%B} {t.day}, {t.year}, {hour}:{t.minute:02d} {'AM' if t.hour < 12 else 'PM'}"
 
 
-def instructions(cfg, now=None):
+def instructions(cfg, now=None, room=""):
     text = INSTRUCTIONS.format(now=_say_time(lodge_now(now)))
+    if room:
+        text += (f"\n- This screen is in {room}. \"Here\" or \"this room\" means there; prefer "
+                 "what's in this room when a request doesn't say which.")
     if cfg.instructions:
         text += "\n" + cfg.instructions
     return text
@@ -110,10 +117,10 @@ def function_tools(listed):
     return out
 
 
-def session_update(cfg, tool_defs, now=None):
+def session_update(cfg, tool_defs, now=None, room=""):
     return {"type": "session.update", "session": {
         "type": "realtime",
-        "instructions": instructions(cfg, now),
+        "instructions": instructions(cfg, now, room),
         "output_modalities": ["audio"],
         "tools": tool_defs,
         "tool_choice": "auto" if tool_defs else "none",
@@ -398,7 +405,8 @@ class Conversation:
         ev = await next_event()
         if ev.get("type") != "session.created":
             raise RealtimeError(f"expected session.created, got {ev.get('type')}")
-        await ws.send(json.dumps(session_update(self.cfg, function_tools(self.tools))))
+        room = config.room_for(self.cfg, self.screen.ip, self.screen.display)
+        await ws.send(json.dumps(session_update(self.cfg, function_tools(self.tools), room=room)))
         while (await next_event()).get("type") != "session.updated":
             pass
 
