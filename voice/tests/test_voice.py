@@ -203,7 +203,7 @@ class ListenSocketTests(_DataDir, SimpleTestCase):
         self.assertEqual(sent[0], {"type": "websocket.accept"})
         msgs = texts(sent)
         self.assertEqual(msgs[0], {"type": "hello", "words": ["hey_jarvis"], "threshold": 0.5,
-                                   "assistant": True})
+                                   "assistant": True, "ping": listen.PING_SECONDS})
         wakes = [m for m in msgs if m["type"] == "wake"]
         self.assertEqual(len(wakes), 1, msgs)
         self.assertGreater(wakes[0]["score"], 0.5)
@@ -233,7 +233,32 @@ class ListenSocketTests(_DataDir, SimpleTestCase):
         self.cfg = config.Config(word="alexa", threshold=0.7)
         sent = run_socket(scope())
         self.assertEqual(texts(sent)[0], {"type": "hello", "words": ["alexa"], "threshold": 0.7,
-                                            "assistant": True})
+                                            "assistant": True, "ping": listen.PING_SECONDS})
+
+
+    def test_keepalive_pings(self):
+        sent = []
+
+        async def go():
+            incoming = asyncio.Queue()
+            incoming.put_nowait({"type": "websocket.connect"})
+
+            async def send(message):
+                sent.append(message)
+
+            task = asyncio.ensure_future(listen.listen(scope(), incoming.get, send))
+            loop = asyncio.get_running_loop()
+            deadline = loop.time() + 30
+            while loop.time() < deadline and texts(sent).count({"type": "ping"}) < 2:
+                await asyncio.sleep(0.01)
+            incoming.put_nowait({"type": "websocket.disconnect", "code": 1000})
+            await asyncio.wait_for(task, 30)
+
+        with patch.object(listen, "PING_SECONDS", 0.05):
+            asyncio.run(go())
+        msgs = texts(sent)
+        self.assertEqual(msgs[0]["ping"], 0.05)
+        self.assertEqual(msgs[1:3], [{"type": "ping"}] * 2)
 
 
 class ClipTests(_DataDir, SimpleTestCase):
