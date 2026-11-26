@@ -512,6 +512,18 @@ class HelperTests(SimpleTestCase):
                       assistant.instructions(cfg, room="the great room"))
         self.assertNotIn("This screen is in", assistant.instructions(cfg))
 
+    def test_load_reads_every_setting(self):
+        # The other tests replace config.load, so run the real one end to end.
+        stored = {"listen": "false", "threshold": "70", "model": "gpt-realtime-2.1",
+                  "screen_rooms": " the great room "}
+        with patch("voice.config.app_setting", side_effect=lambda app, key, default: stored.get(key, default)):
+            cfg = config.load()
+        self.assertFalse(cfg.listen)
+        self.assertEqual(cfg.threshold, 0.7)
+        self.assertEqual(cfg.model, "gpt-realtime-2.1")
+        self.assertEqual(cfg.screen_rooms, "the great room")
+        self.assertTrue(cfg.assistant)
+
     def test_confirm_tools_say_so(self):
         [t] = assistant.function_tools([{"name": "a", "title": "Unlock", "description": "Unlock the door.",
                                          "parameters": {"type": "object", "properties": {}},

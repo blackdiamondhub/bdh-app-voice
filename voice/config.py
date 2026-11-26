@@ -54,6 +54,9 @@ def room_for(cfg, *screen_ids):
         elif key.strip() and key.strip() in screen_ids:
             return room.strip()
     return fallback
+
+
+def _bool(key, default):
     try:
         return as_bool(app_setting(APP_ID, key, default))
     except ValueError:
