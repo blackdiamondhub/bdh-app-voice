@@ -10,6 +10,12 @@ answers with text JSON:
   detection, at most one per :data:`DEBOUNCE_SECONDS` of audio;
 - ``{"type": "config", "listen": false}`` then a close when listening is off.
 
+After a wake the voice assistant (:mod:`voice.assistant`) may hold a
+conversation on the same socket: it sends ``state``/``transcript``/
+``speak_*``/``conversation_end`` messages and the reply audio as binary
+frames (24 kHz int16 mono). Wake detection is paused on a screen while its
+conversation runs. The screen may send ``{"type": "end"}`` to end it.
+
 There is no sign-in (the kiosk has no cookies, like the cameras talk socket):
 only private (LAN) addresses are accepted, anything else is closed with
 :data:`FORBIDDEN`. Each connection has its own detector; inference runs in a
@@ -31,7 +37,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from . import clips, config
+from . import assistant, clips, config
 from .detector import CHUNK, SAMPLE_RATE, Detector
 
 log = logging.getLogger(__name__)
@@ -76,9 +82,11 @@ class Screen:
             return max((s for t, s in self._scores if now - t <= PEAK_WINDOW), default=0.0)
 
     def as_dict(self):
+        conv = assistant.active(self)
         return {"id": self.id, "ip": self.ip, "display": self.display, "version": self.version,
                 "since": self.since.isoformat(), "level": round(self.level, 1),
-                "peak": round(self.peak(), 3)}
+                "peak": round(self.peak(), 3),
+                "conversation": conv.as_dict() if conv else None}
 
 
 _screens = {}
@@ -119,23 +127,47 @@ class Session:
         self._odd = b""
         self.samples = 0  # audio received, for debouncing in audio time
         self._last_wake = None
+        self.tail = None  # audio after the last wake in the latest batch
         self.reset(cfg)
 
     def reset(self, cfg):
         self.cfg = cfg
         self.detector = Detector(cfg.word)
 
-    def process(self, data):
-        """Handle received bytes; return the wake messages to send."""
+    def _pcm(self, data):
         data = self._odd + data
         cut = len(data) - len(data) % 2
         self._odd = data[cut:]
         pcm = np.frombuffer(data[:cut], dtype="<i2").astype(np.int16)
+        if len(pcm):
+            self.screen.level = level_dbfs(pcm[-SAMPLE_RATE // 2:])
+            self.samples += len(pcm)
+        return pcm
+
+    def _clips(self, pcm):
+        for tag, audio in self.recorder.add(pcm):
+            try:
+                clips.save_clip(tag, audio)
+            except OSError:
+                log.exception("could not save clip %s", tag)
+
+    def take(self, data):
+        """Received bytes while a conversation runs: no detection; return the PCM."""
+        pcm = self._pcm(data)
+        if len(pcm):
+            self._clips(pcm)
+        return pcm
+
+    def process(self, data):
+        """Handle received bytes; return the wake messages to send.
+
+        After a wake, :attr:`tail` holds the audio that followed it in this batch.
+        """
+        self.tail = None
+        start = self.samples
+        pcm = self._pcm(data)
         if not len(pcm):
             return []
-        self.screen.level = level_dbfs(pcm[-SAMPLE_RATE // 2:])
-        start = self.samples
-        self.samples += len(pcm)
         wakes = []
         # Each score belongs to the chunk that ended at that point in the stream.
         pending = self.detector.buffered
@@ -149,11 +181,10 @@ class Session:
                 continue
             self._last_wake = at_sample
             wakes.append(self._wake(score, at_sample))
-        for tag, audio in self.recorder.add(pcm):
-            try:
-                clips.save_clip(tag, audio)
-            except OSError:
-                log.exception("could not save clip %s", tag)
+            # The rest of the batch belongs to the conversation this wake may start.
+            self.tail = pcm[max(0, at_sample - start):]
+            break
+        self._clips(pcm)
         return wakes
 
     def _wake(self, score, at_sample):
@@ -226,7 +257,8 @@ async def _config(refresh=False):
 
 
 def hello(cfg):
-    return {"type": "hello", "words": [cfg.word], "threshold": cfg.threshold}
+    return {"type": "hello", "words": [cfg.word], "threshold": cfg.threshold,
+            "assistant": cfg.assistant}
 
 
 async def listen(scope, receive, send):
@@ -248,11 +280,12 @@ async def listen(scope, receive, send):
     screen = Screen(ip, query.get("display", "")[:64], query.get("v", "")[:32])
     loop = asyncio.get_running_loop()
     session = await loop.run_in_executor(_executor, Session, screen, cfg)
-    await _text(send, hello(cfg))
+    out = assistant.Out(send)
+    await out.text(hello(cfg))
     _register(screen)
     log.info("screen %s connected from %s (kiosk %s)", screen.display, ip, screen.version or "?")
     inbox = asyncio.Queue()
-    worker = asyncio.ensure_future(_work(session, inbox, send))
+    worker = asyncio.ensure_future(_work(session, inbox, out))
     try:
         while True:
             message = await receive()
@@ -260,9 +293,13 @@ async def listen(scope, receive, send):
                 break
             if message.get("bytes"):
                 inbox.put_nowait(message["bytes"])
+            elif message.get("text"):
+                await _control(screen, message["text"])
             if worker.done():
                 break
     finally:
+        out.closed = True
+        await assistant.end(screen, "disconnected")
         worker.cancel()
         try:
             await worker
@@ -274,10 +311,20 @@ async def listen(scope, receive, send):
         log.info("screen %s disconnected", screen.display)
 
 
-async def _work(session, inbox, send):
+async def _control(screen, text):
+    try:
+        msg = json.loads(text)
+    except ValueError:
+        return
+    if isinstance(msg, dict) and msg.get("type") == "end":
+        await assistant.end(screen, "ended")
+
+
+async def _work(session, inbox, out):
     loop = asyncio.get_running_loop()
     max_backlog = int(MAX_BACKLOG_SECONDS * SAMPLE_RATE * 2)
     checked = time.monotonic()
+    talking = False
     while True:
         parts = [await inbox.get()]
         while not inbox.empty():
@@ -292,14 +339,27 @@ async def _work(session, inbox, send):
             checked = time.monotonic()
             cfg = await _config()
             if not cfg.listen:
-                await _text(send, {"type": "config", "listen": False})
-                await send({"type": "websocket.close", "code": 1000})
+                await assistant.end(session.screen, "disabled")
+                await out.text({"type": "config", "listen": False})
+                await out.close()
                 return
-            if cfg.word != session.cfg.word:
-                await loop.run_in_executor(_executor, session.reset, cfg)
-                await _text(send, hello(cfg))
-            else:
-                session.cfg = cfg
-        for wake in await loop.run_in_executor(_executor, session.process, data):
-            await _text(send, wake)
+            if cfg.word != session.cfg.word or cfg.assistant != session.cfg.assistant:
+                if cfg.word != session.cfg.word:
+                    await loop.run_in_executor(_executor, session.reset, cfg)
+                await out.text(hello(cfg))
+            session.cfg = cfg
+        conv = assistant.active(session.screen)
+        if conv:
+            talking = True
+            conv.feed(await loop.run_in_executor(_executor, session.take, data))
+        else:
+            if talking:
+                # Start detection afresh: the old window still holds the wake word.
+                talking = False
+                await loop.run_in_executor(_executor, session.reset, session.cfg)
+            wakes = await loop.run_in_executor(_executor, session.process, data)
+            for wake in wakes:
+                await out.text(wake)
+            if wakes and await assistant.on_wake(session.screen, out, session.cfg, session.tail):
+                talking = True
         session.screen.heard = session.samples

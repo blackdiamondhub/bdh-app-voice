@@ -202,7 +202,8 @@ class ListenSocketTests(_DataDir, SimpleTestCase):
         sent = run_socket(scope(), frames(audio))
         self.assertEqual(sent[0], {"type": "websocket.accept"})
         msgs = texts(sent)
-        self.assertEqual(msgs[0], {"type": "hello", "words": ["hey_jarvis"], "threshold": 0.5})
+        self.assertEqual(msgs[0], {"type": "hello", "words": ["hey_jarvis"], "threshold": 0.5,
+                                   "assistant": True})
         wakes = [m for m in msgs if m["type"] == "wake"]
         self.assertEqual(len(wakes), 1, msgs)
         self.assertGreater(wakes[0]["score"], 0.5)
@@ -231,7 +232,8 @@ class ListenSocketTests(_DataDir, SimpleTestCase):
     def test_other_word_and_threshold_in_hello(self):
         self.cfg = config.Config(word="alexa", threshold=0.7)
         sent = run_socket(scope())
-        self.assertEqual(texts(sent)[0], {"type": "hello", "words": ["alexa"], "threshold": 0.7})
+        self.assertEqual(texts(sent)[0], {"type": "hello", "words": ["alexa"], "threshold": 0.7,
+                                            "assistant": True})
 
 
 class ClipTests(_DataDir, SimpleTestCase):
