@@ -4,8 +4,12 @@ Each screen streams its microphone as binary frames of 16 kHz signed 16-bit
 little-endian mono PCM (20 ms = 640 bytes, but any size is buffered). The app
 answers with text JSON:
 
-- ``{"type": "hello", "words": [...], "threshold": 0.5}`` once accepted (and
-  again if the wake word is changed in settings);
+- ``{"type": "hello", "words": [...], "threshold": 0.5, "assistant": true,
+  "ping": 15}`` once accepted (and again if the wake word is changed in
+  settings); ``ping`` promises a ``{"type": "ping"}`` every that many seconds;
+- ``{"type": "ping"}`` every :data:`PING_SECONDS`, so a screen can tell a live
+  socket from one whose far end is gone (websocket pings stop at the hub's
+  proxy) and reconnect;
 - ``{"type": "wake", "word": ..., "score": 0.91, "at": "<iso8601>"}`` per
   detection, at most one per :data:`DEBOUNCE_SECONDS` of audio;
 - ``{"type": "config", "listen": false}`` then a close when listening is off.
@@ -47,6 +51,7 @@ DEBOUNCE_SECONDS = 2.0
 PEAK_WINDOW = 10.0  # seconds of scores behind "peak score" on the status page
 MAX_BACKLOG_SECONDS = 5.0  # audio waiting for the detector before the oldest is dropped
 LEVEL_FLOOR = -96.0
+PING_SECONDS = 15  # app-level keepalive; screens reconnect after ~3 missed
 
 _executor = ThreadPoolExecutor(max_workers=max(1, min(4, os.cpu_count() or 1)),
                                thread_name_prefix="voice")
@@ -258,7 +263,7 @@ async def _config(refresh=False):
 
 def hello(cfg):
     return {"type": "hello", "words": [cfg.word], "threshold": cfg.threshold,
-            "assistant": cfg.assistant}
+            "assistant": cfg.assistant, "ping": PING_SECONDS}
 
 
 async def listen(scope, receive, send):
@@ -286,6 +291,7 @@ async def listen(scope, receive, send):
     log.info("screen %s connected from %s (kiosk %s)", screen.display, ip, screen.version or "?")
     inbox = asyncio.Queue()
     worker = asyncio.ensure_future(_work(session, inbox, out))
+    pinger = asyncio.ensure_future(_keepalive(out))
     try:
         while True:
             message = await receive()
@@ -299,6 +305,7 @@ async def listen(scope, receive, send):
                 break
     finally:
         out.closed = True
+        pinger.cancel()
         await assistant.end(screen, "disconnected")
         worker.cancel()
         try:
@@ -309,6 +316,12 @@ async def listen(scope, receive, send):
             log.exception("screen %s: listen worker failed", screen.display)
         _unregister(screen)
         log.info("screen %s disconnected", screen.display)
+
+
+async def _keepalive(out):
+    while not out.closed:
+        await asyncio.sleep(PING_SECONDS)
+        await out.text({"type": "ping"})
 
 
 async def _control(screen, text):

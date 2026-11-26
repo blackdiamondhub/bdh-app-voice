@@ -32,7 +32,8 @@ little-endian mono PCM, normally 20 ms (640 bytes) each. Any frame size works.
 
 | Message | When |
 | --- | --- |
-| `{"type":"hello","words":["hey_jarvis"],"threshold":0.5,"assistant":true}` | Right after the socket is accepted. It is sent again if the wake word or the assistant setting changes. |
+| `{"type":"hello","words":["hey_jarvis"],"threshold":0.5,"assistant":true,"ping":15}` | Right after the socket is accepted. It is sent again if the wake word or the assistant setting changes. `ping` (0.2.0b5+) says the app sends a `ping` message every that many seconds. |
+| `{"type":"ping"}` | Every 15 s (0.2.0b5+). Websocket pings only reach the hub's proxy, so this is how a screen knows the app itself is still there: if nothing arrives for about three intervals, close the socket and reconnect. Ignore it otherwise. |
 | `{"type":"wake","word":"hey_jarvis","score":0.91,"at":"2026-…Z"}` | On each detection. A connection gets at most one wake per 2 s of audio. |
 | `{"type":"config","listen":false}` | When listening is off. The socket is then closed; the screen should retry later. |
 
