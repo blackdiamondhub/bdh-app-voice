@@ -23,7 +23,7 @@ DEFAULT_MODEL = MODELS[0][0]
 VOICES = ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse")
 DEFAULT_VOICE = "marin"
 DEFAULT_MAX_SECONDS = 90
-DEFAULT_FOLLOW_UP = 8
+DEFAULT_FOLLOW_UP = 5
 
 
 @dataclass(frozen=True)

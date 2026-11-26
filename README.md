@@ -54,7 +54,7 @@ its mic audio, which the assistant needs to hear interruptions.
 | binary frames | Reply audio: 24 kHz signed 16-bit little-endian mono PCM, at most 9600 bytes (200 ms) per frame. |
 | `{"type":"speak_end"}` | The reply's audio is complete. Play out what is queued. |
 | `{"type":"speak_stop"}` | The user interrupted. Drop all queued audio now. |
-| `{"type":"conversation_end","reason":"idle"}` | The conversation is over, and wake detection resumes. `reason` is one of `idle`, `max_seconds`, `error`, `ended`, `disabled`, `stopped`, `not_configured` or `busy`. `message` may carry a short text to show. |
+| `{"type":"conversation_end","reason":"idle"}` | The conversation is over, and wake detection resumes. `reason` is one of `idle`, `done`, `max_seconds`, `error`, `ended`, `disabled`, `stopped`, `not_configured` or `busy`. `message` may carry a short text to show. |
 
 **Screen → app** adds one message: `{"type":"end"}` ends the conversation, for
 example when the doorbell talk-back takes over the mic.
@@ -100,6 +100,11 @@ A conversation ends:
 
 - after **Wait for a follow-up** seconds of silence once the last reply has
   played;
+- when the person is done ("thanks, that's all", "never mind", "stop"): the
+  model says a short goodbye and calls the built-in `end_conversation` tool,
+  and the conversation ends (reason `done`) as soon as the goodbye has played.
+  The voice app handles that tool itself; it never reaches the hub's gateway.
+  Speaking again before then cancels the end;
 - after **Longest conversation** seconds in total;
 - on a Realtime or socket error;
 - when the screen sends `end` or disconnects.
@@ -165,7 +170,7 @@ Admins can change these settings:
 - **Voice** (`voice`): `marin` (default), `cedar`, `alloy`, `ash`, `ballad`,
   `coral`, `echo`, `sage`, `shimmer` or `verse`.
 - **Longest conversation** (`max_seconds`): 90 s by default, from 10 to 600 s.
-- **Wait for a follow-up** (`follow_up_seconds`): 8 s by default, from 2 to 60 s.
+- **Wait for a follow-up** (`follow_up_seconds`): 5 s by default, from 2 to 60 s.
 - **Extra instructions** (`instructions`): text added to the assistant's
   instructions, such as house rules or local tips.
 - **Where the screens are** (`screen_rooms`): the room each screen is in, so

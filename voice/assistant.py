@@ -16,7 +16,8 @@ binary frames on the same listen socket, framed by JSON messages:
 
 The server's semantic VAD ends the user's turns and starts replies. The
 conversation ends after ``follow_up_seconds`` without speech once the last
-reply has played, after ``max_seconds``, on a realtime error, or when the
+reply has played, once the goodbye has played after the model calls the
+built-in :data:`END_TOOL`, after ``max_seconds``, on a realtime error, or when the
 screen goes away. Each finished turn is published as a hub event on
 ``voice/conversation`` for a future supervisor.
 """
@@ -48,6 +49,11 @@ LODGE_UTC_OFFSET = timedelta(hours=-7)  # America/Vancouver: permanent UTC-7 sin
 # Errors the API sends for races that don't matter (cancel after the reply ended, …).
 HARMLESS_ERRORS = frozenset({"response_cancel_not_active", "conversation_already_has_active_response",
                              "item_truncate_invalid_item_id"})
+END_TOOL = "end_conversation"  # handled here, not by the gateway
+END_TOOL_DEF = {"type": "function", "name": END_TOOL,
+                "description": "Stop listening and go back to waiting for the wake word. Call it "
+                               "when the person is done, after a short goodbye.",
+                "parameters": {"type": "object", "properties": {}}}
 NOT_CONFIGURED = "The assistant isn't set up yet."
 BUSY = "The assistant is busy, try again in a moment."
 
@@ -65,6 +71,9 @@ say you can't do that from this screen. Never attempt owner or admin actions.
 to the names your tools give. If it could mean more than one thing and the conversation doesn't \
 settle it, ask a short question ("The living room or the master bedroom?") before acting; if \
 it's clear, just do it without asking.
+- When they're done ("thanks", "that's all", "never mind", "stop", "goodbye"), say a very short \
+goodbye and call end_conversation in the same reply. Also call it after a goodbye when they've \
+clearly finished; otherwise just stop talking and wait, they may follow up.
 - If you didn't catch what was said, ask them to repeat it. Reply in the language you're spoken to.
 - The current local time at the lodge (Pacific time, UTC-7) is {now}."""
 
@@ -103,9 +112,11 @@ def realtime_url(endpoint, model):
 
 
 def function_tools(listed):
-    """The gateway's tools as realtime function tools."""
-    out = []
+    """The gateway's tools as realtime function tools, plus :data:`END_TOOL`."""
+    out = [END_TOOL_DEF]
     for t in listed:
+        if t.get("name") == END_TOOL:
+            continue
         desc = t.get("description") or ""
         if t.get("title"):
             desc = f"{t['title']}: {desc}" if desc else t["title"]
@@ -123,7 +134,7 @@ def session_update(cfg, tool_defs, now=None, room=""):
         "instructions": instructions(cfg, now, room),
         "output_modalities": ["audio"],
         "tools": tool_defs,
-        "tool_choice": "auto" if tool_defs else "none",
+        "tool_choice": "auto",
         "audio": {
             "input": {
                 "format": {"type": "audio/pcm", "rate": MODEL_RATE},
@@ -236,6 +247,7 @@ class Conversation:
         self.cancelled = set()
         self.tool_tasks = {}  # call_id -> task
         self.followups = 0  # response.create calls waiting on tools
+        self.ending = False  # the model called END_TOOL; end once its goodbye has played
         self.last_activity = time.monotonic()
         # Playback (what the screen is playing)
         self.speaking = False
@@ -334,7 +346,7 @@ class Conversation:
     async def _finish(self, message):
         for t in list(self.tool_tasks.values()):
             t.cancel()
-        if self.speaking and self.reason not in ("idle",):
+        if self.speaking and self.reason not in ("idle", "done"):
             await self.out.text({"type": "speak_stop"})
         self.speaking = False
         self._publish_turn()
@@ -388,7 +400,7 @@ class Conversation:
                         raise exc
                 if reader in done:
                     raise RealtimeError("the realtime socket closed")
-                return "idle"
+                return "done" if self.ending else "idle"
             finally:
                 for t in (pump, watch, reader):
                     t.cancel()
@@ -418,6 +430,8 @@ class Conversation:
             if busy:
                 continue
             quiet_since = max(self.last_activity, self.playback_end)
+            if self.ending and now >= self.playback_end:
+                return
             if now - quiet_since >= self.cfg.follow_up_seconds:
                 return
 
@@ -441,6 +455,7 @@ class Conversation:
 
     async def _on_input_audio_buffer_speech_started(self, ws, ev):
         self.user_speaking = True
+        self.ending = False  # "oh, one more thing…"
         self.last_activity = time.monotonic()
         if self._playing():
             await self._barge_in(ws, ev)
@@ -516,6 +531,11 @@ class Conversation:
         if item.get("type") != "function_call" or ev.get("response_id") in self.cancelled:
             return
         call_id = item.get("call_id") or ""
+        if item.get("name") == END_TOOL:
+            self.ending = True
+            self.turn["tools"].append({"name": END_TOOL, "args": {}, "ok": True})
+            log.info("screen %s: the assistant ended the conversation", self.screen.display)
+            return
         self.tool_tasks[call_id] = asyncio.ensure_future(self._run_tool(ws, item))
 
     async def _on_response_done(self, ws, ev):
@@ -524,7 +544,7 @@ class Conversation:
             self.response_id = None
         self.last_activity = time.monotonic()
         calls = [o.get("call_id") for o in response.get("output") or ()
-                 if o.get("type") == "function_call" and o.get("call_id")]
+                 if o.get("type") == "function_call" and o.get("call_id") and o.get("name") != END_TOOL]
         if response.get("status") == "cancelled":
             return  # the user spoke over it; their next turn gets its own reply
         if calls:
