@@ -266,8 +266,8 @@ class ConversationTests(_Assistant, SimpleTestCase):
         session = rt.events("session.update")[0]["session"]
         self.assertEqual(session["type"], "realtime")
         self.assertIn("Black Diamond Lodge", session["instructions"])
-        self.assertEqual([t["name"] for t in session["tools"]], ["fireplace_on"])
-        self.assertEqual(session["tools"][0]["parameters"]["required"], ["level"])
+        self.assertEqual([t["name"] for t in session["tools"]], ["end_conversation", "fireplace_on"])
+        self.assertEqual(session["tools"][1]["parameters"]["required"], ["level"])
         self.assertEqual(session["audio"]["output"]["voice"], "marin")
         self.assertEqual(session["audio"]["input"]["format"], {"type": "audio/pcm", "rate": 24000})
         self.assertEqual(session["audio"]["input"]["turn_detection"]["type"], "semantic_vad")
@@ -341,6 +341,57 @@ class ConversationTests(_Assistant, SimpleTestCase):
         self.assertEqual(len(self.broker.tool_calls), 1)
         tools_used = [t for turn in self.published() for t in turn["tools"]]
         self.assertEqual(tools_used[0]["error"], "the fireplace is offline")
+
+    def test_saying_thats_all_ends_after_the_goodbye(self):
+        goodbye = b"\x01\x00" * 24000  # 1 s of audio
+
+        async def script(rt, ws):
+            await rt.wait_for("input_audio_buffer.append")
+            # "Oh wait" after an end call keeps the conversation going...
+            await rt.send(ws, "response.created", response={"id": "r0"})
+            await rt.send(ws, "response.output_item.done", response_id="r0",
+                          item=fc_item("c0", "end_conversation", "{}"))
+            await rt.send(ws, "input_audio_buffer.speech_started", item_id="u0")
+            await rt.send(ws, "response.done", response={"id": "r0", "status": "completed", "output": [
+                fc_item("c0", "end_conversation", "{}")]})
+            await rt.send(ws, "input_audio_buffer.speech_stopped", item_id="u0")
+            await asyncio.sleep(0.5)
+            self.assertEqual(kiosk.texts("conversation_end"), [])
+            # ..."that's all, thanks": a spoken goodbye and the end call in one reply.
+            await rt.send(ws, "input_audio_buffer.speech_started", item_id="u1")
+            await rt.send(ws, "input_audio_buffer.speech_stopped", item_id="u1")
+            self.said_bye = time.monotonic()
+            item = fc_item("c1", "end_conversation", "{}")
+            await rt.send(ws, "response.created", response={"id": "r1"})
+            await rt.send(ws, "response.output_audio.delta", response_id="r1", item_id="a1",
+                          delta=base64.b64encode(goodbye).decode())
+            await rt.send(ws, "response.output_audio.done", response_id="r1", item_id="a1")
+            await rt.send(ws, "response.output_item.done", response_id="r1", item=item)
+            await rt.send(ws, "response.done", response={"id": "r1", "status": "completed", "output": [
+                {"id": "a1", "type": "message"}, item]})
+
+        async def go():
+            nonlocal kiosk
+            async with FakeRealtime(script) as rt:
+                self.use(rt, follow_up_seconds=30)
+                async with Kiosk() as kiosk:
+                    kiosk.push(tone(0.5))
+                    end = await kiosk.wait_for("conversation_end")
+                    ended = time.monotonic()
+                    return rt, end, ended
+
+        kiosk = None
+        rt, end, ended = asyncio.run(go())
+        self.assertEqual(end, {"type": "conversation_end", "reason": "done"})
+        # Not cut off: the screen got the whole goodbye, and the end waited for it to play.
+        self.assertEqual(sum(map(len, kiosk.audio())), len(goodbye))
+        self.assertEqual(kiosk.texts("speak_stop"), [])
+        self.assertGreaterEqual(ended - self.said_bye, 1.0)
+        self.assertLess(ended - self.said_bye, 5)
+        # Handled here: no gateway call, no tool output, no follow-up reply.
+        self.assertEqual(self.broker.tool_calls, [])
+        self.assertEqual(rt.events("conversation.item.create"), [])
+        self.assertEqual(rt.events("response.create"), [])
 
     def test_wake_detection_paused_during_a_conversation(self):
         self.hits = (3, 40)  # 40 is 3.2 s in, well past the debounce
@@ -432,8 +483,8 @@ class GatewayRefusedTests(_Assistant, SimpleTestCase):
 
         rt = asyncio.run(go())
         session = rt.events("session.update")[0]["session"]
-        self.assertEqual(session["tools"], [])
-        self.assertEqual(session["tool_choice"], "none")
+        # Only the built-in end_conversation, which never reaches the gateway.
+        self.assertEqual([t["name"] for t in session["tools"]], ["end_conversation"])
         self.assertFalse(self.tool_output["ok"])
         self.assertEqual(self.broker.tool_calls, [])
 
@@ -525,7 +576,7 @@ class HelperTests(SimpleTestCase):
         self.assertTrue(cfg.assistant)
 
     def test_confirm_tools_say_so(self):
-        [t] = assistant.function_tools([{"name": "a", "title": "Unlock", "description": "Unlock the door.",
+        [_, t] = assistant.function_tools([{"name": "a", "title": "Unlock", "description": "Unlock the door.",
                                          "parameters": {"type": "object", "properties": {}},
                                          "confirm": True}])
         self.assertEqual(t["description"], "Unlock: Unlock the door. (confirm first)")
