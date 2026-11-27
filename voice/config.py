@@ -12,6 +12,9 @@ from bdh_sdk.settings import app_setting, as_bool
 
 from .detector import DEFAULT_WORD, WAKE_WORDS
 
+DEFAULT_COLLECT_THRESHOLD = 30  # percent
+DEFAULT_MAX_CLIPS = 3000
+
 APP_ID = "voice"
 TTL = 10.0
 DEFAULT_THRESHOLD = 50  # percent
@@ -32,6 +35,11 @@ class Config:
     word: str = DEFAULT_WORD
     threshold: float = DEFAULT_THRESHOLD / 100
     save_clips: bool = True
+    # Wake-word training clips (voice.dataset).
+    collect_clips: bool = True
+    collect_threshold: float = DEFAULT_COLLECT_THRESHOLD / 100
+    collect_during_stays: bool = False
+    collect_max_clips: int = DEFAULT_MAX_CLIPS
     # The voice assistant (a conversation after each wake word).
     assistant: bool = True
     endpoint: str = DEFAULT_ENDPOINT
@@ -83,6 +91,10 @@ def load():
         word=_choice("wake_word", DEFAULT_WORD, WAKE_WORDS),
         threshold=pct / 100,
         save_clips=_bool("save_clips", True),
+        collect_clips=_bool("collect_clips", True),
+        collect_threshold=_int("collect_threshold", DEFAULT_COLLECT_THRESHOLD, 1, 99) / 100,
+        collect_during_stays=_bool("collect_during_stays", False),
+        collect_max_clips=_int("collect_max_clips", DEFAULT_MAX_CLIPS, 10, 50000),
         assistant=_bool("enabled", True),
         endpoint=str(app_setting(APP_ID, "endpoint", DEFAULT_ENDPOINT) or DEFAULT_ENDPOINT).strip(),
         model=_choice("model", DEFAULT_MODEL, [m for m, _ in MODELS]),

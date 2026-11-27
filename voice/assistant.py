@@ -32,7 +32,7 @@ from datetime import datetime, timedelta, timezone
 import websockets
 from bdh_sdk import events, rpc, tools
 
-from . import config
+from . import config, dataset
 from .audio import MODEL_RATE, Resampler
 
 log = logging.getLogger(__name__)
@@ -215,8 +215,12 @@ def conversations():
     return list(_active.values())
 
 
-async def on_wake(screen, out, cfg, tail=None):
-    """The wake word was heard on ``screen``: start a conversation if we can."""
+async def on_wake(screen, out, cfg, tail=None, clip_id=None):
+    """The wake word was heard on ``screen``: start a conversation if we can.
+
+    ``clip_id`` is the wake's training clip (:mod:`voice.dataset`), which
+    learns how the conversation went when it ends.
+    """
     if not cfg.assistant or screen.id in _active:
         return None
     key = await asyncio.to_thread(config.api_key)
@@ -230,6 +234,7 @@ async def on_wake(screen, out, cfg, tail=None):
         await out.text({"type": "conversation_end", "reason": "busy", "message": BUSY})
         return None
     conv = Conversation(screen, out, cfg, key)
+    conv.clip_id = clip_id
     _active[screen.id] = conv
     if tail is not None and len(tail):
         conv.feed(tail)
@@ -284,6 +289,12 @@ class Conversation:
         self.turn = self._new_turn()
         self.turns = 0
         self._partial = {}  # item id -> text so far
+        # How it went, for the wake's training clip.
+        self.clip_id = None
+        self.user_turns = 0
+        self.first_user = ""
+        self.tool_calls = 0
+        self.replies = 0
 
     def __repr__(self):
         return f"<Conversation {self.screen.display} {self.state or 'starting'}>"
@@ -382,8 +393,17 @@ class Conversation:
         await self.out.text(end)
         if _active.get(self.screen.id) is self:
             del _active[self.screen.id]
+        seconds = time.monotonic() - self.started
         log.info("screen %s: conversation ended (%s) after %.0f s, %d turns", self.screen.display,
-                 self.reason, time.monotonic() - self.started, self.turns)
+                 self.reason, seconds, self.turns)
+        try:
+            dataset.outcome(self.clip_id, reason=self.reason, duration=seconds,
+                            user_turns=self.user_turns, tool_calls=self.tool_calls,
+                            replies=self.replies,
+                            silent_end=self.ending and not self.replies and not self.tool_calls,
+                            transcript=self.first_user)
+        except Exception:
+            log.exception("could not record the conversation outcome")
 
     async def _set_state(self, state):
         if state != self.state:
@@ -502,6 +522,8 @@ class Conversation:
         text = (ev.get("transcript") or "").strip()
         if text:
             log.info("screen %s: user: %s", self.screen.display, text[:LOG_TEXT])
+            self.user_turns += 1
+            self.first_user = self.first_user or text
             self.turn["user"] = (self.turn["user"] + " " + text).strip()
             await self.out.text({"type": "transcript", "role": "user", "text": text, "final": True})
 
@@ -550,6 +572,7 @@ class Conversation:
         if ev.get("response_id") in self.cancelled:
             text += " …"
         log.info("screen %s: assistant: %s", self.screen.display, text[:LOG_TEXT])
+        self.replies += 1
         self.turn["assistant"] = (self.turn["assistant"] + " " + text).strip()
         await self.out.text({"type": "transcript", "role": "assistant", "text": text, "final": True})
 
@@ -563,6 +586,7 @@ class Conversation:
             self.turn["tools"].append({"name": END_TOOL, "args": {}, "ok": True})
             log.info("screen %s: the assistant ended the conversation", self.screen.display)
             return
+        self.tool_calls += 1
         self.tool_tasks[call_id] = asyncio.ensure_future(self._run_tool(ws, item))
 
     async def _on_response_done(self, ws, ev):

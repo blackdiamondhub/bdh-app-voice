@@ -41,7 +41,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 
-from . import assistant, clips, config
+from . import assistant, clips, config, dataset
 from .detector import CHUNK, SAMPLE_RATE, Detector
 
 log = logging.getLogger(__name__)
@@ -133,6 +133,8 @@ class Session:
         self.samples = 0  # audio received, for debouncing in audio time
         self._last_wake = None
         self.tail = None  # audio after the last wake in the latest batch
+        self.events = dataset.Events(DEBOUNCE_SECONDS)
+        self.wake_clip = None  # training clip id of the last wake in the latest batch
         self.reset(cfg)
 
     def reset(self, cfg):
@@ -151,10 +153,25 @@ class Session:
 
     def _clips(self, pcm):
         for tag, audio in self.recorder.add(pcm):
+            if isinstance(tag, dict):
+                dataset.writer.clip(tag, audio)  # a training clip: saved off this thread
+                continue
             try:
                 clips.save_clip(tag, audio)
             except OSError:
                 log.exception("could not save clip %s", tag)
+
+    def _collect(self, score, at_sample, fired, wake_threshold):
+        """A detection event peaked at ``at_sample``: ask for its training clip."""
+        clip_id = dataset.new_id()
+        self.recorder.mark({
+            "id": clip_id, "at": datetime.now(timezone.utc).isoformat(), "ip": self.screen.ip,
+            "screen": self.screen.display, "word": self.cfg.word, "score": round(score, 3),
+            "threshold": wake_threshold, "collect_threshold": self.cfg.collect_threshold,
+            "fired": int(fired),
+        }, at_sample)
+        if fired:
+            self.wake_clip = clip_id
 
     def take(self, data):
         """Received bytes while a conversation runs: no detection; return the PCM."""
@@ -169,6 +186,7 @@ class Session:
         After a wake, :attr:`tail` holds the audio that followed it in this batch.
         """
         self.tail = None
+        self.wake_clip = None
         start = self.samples
         pcm = self._pcm(data)
         if not len(pcm):
@@ -179,10 +197,15 @@ class Session:
         for i, score in enumerate(self.detector.feed(pcm)):
             self.screen.add_score(score)
             at_sample = start - pending + (i + 1) * CHUNK
-            if score < self.cfg.threshold:
-                continue
-            if (self._last_wake is not None
-                    and at_sample - self._last_wake < DEBOUNCE_SECONDS * SAMPLE_RATE):
+            fired = score >= self.cfg.threshold and (
+                self._last_wake is None
+                or at_sample - self._last_wake >= DEBOUNCE_SECONDS * SAMPLE_RATE)
+            if self.cfg.collect_clips:
+                event = self.events.score(score, at_sample,
+                                          min(self.cfg.collect_threshold, self.cfg.threshold), fired)
+                if event:
+                    self._collect(*event, self.cfg.threshold)
+            if not fired:
                 continue
             self._last_wake = at_sample
             wakes.append(self._wake(score, at_sample))
@@ -373,6 +396,7 @@ async def _work(session, inbox, out):
             wakes = await loop.run_in_executor(_executor, session.process, data)
             for wake in wakes:
                 await out.text(wake)
-            if wakes and await assistant.on_wake(session.screen, out, session.cfg, session.tail):
+            if wakes and await assistant.on_wake(session.screen, out, session.cfg, session.tail,
+                                                 clip_id=session.wake_clip):
                 talking = True
         session.screen.heard = session.samples
