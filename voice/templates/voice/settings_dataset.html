@@ -24,9 +24,14 @@
     .vd-filters a.on { border-color: var(--acc2); background: rgba(91,164,230,.12); }
     .vd-filters a small { color: var(--mut); }
     .vd-pages { display: flex; gap: 10px; justify-content: flex-end; margin: 12px 4px; }
+    .vd-head { flex-wrap: wrap; align-items: center; }
+    .vd-head > div:not(.act) { flex: 1 1 320px; min-width: 0; }
+    .vd-head .vd-ico { display: grid; place-items: center; padding: 0 16px; text-decoration: none; }
+    .vd-head .act a { display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; text-decoration: none; }
 </style>
 
-<div class="hst-head">
+<div class="hst-head vd-head">
+    <a class="hst-btn ghost vd-ico" href="{% url 'voice_status' %}" aria-label="Back to Voice"><i class="fas fa-chevron-left" aria-hidden="true"></i></a>
     <div>
         <h2>Wake-word clips</h2>
         <p>
@@ -40,7 +45,7 @@
         </p>
     </div>
     <div class="act">
-        <a class="hst-btn" style="display:flex;align-items:center;text-decoration:none" href="{% url 'voice_dataset_zip' %}">Download dataset</a>
+        <a class="hst-btn ghost" href="{% url 'voice_dataset_zip' %}" download><i class="fas fa-download" aria-hidden="true"></i> Download dataset</a>
     </div>
 </div>
 
