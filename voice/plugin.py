@@ -20,7 +20,9 @@ spec = PluginSpec(
         Setting("threshold", "Detection threshold", INT, 50, minimum=1, maximum=99, unit="%",
                 help="Score a wake word needs. Lower hears more, and falsely more."),
         Setting("save_clips", "Save detection clips", BOOL, True,
-                help="Keep 3 s of audio around each detection (newest 100) for admins."),
+                help="Keep 3 s of audio around each detection (newest 100) for admins. "
+                     "Never saved while guests are staying, only between stays and during "
+                     "owner stays."),
         Setting("collect_clips", "Collect wake-word training clips", BOOL, True,
                 help="Stores 3 s of microphone audio ON THE HUB around every wake and near-miss "
                      "(scores at or above the collect threshold), with what was said after a "
