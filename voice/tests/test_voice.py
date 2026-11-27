@@ -536,6 +536,7 @@ class DatasetPageTests(_DataDir, TestCase):
         self.assertContains(page, "What&#x27;s the snow like?")
         self.assertContains(page, reverse("voice_dataset_clip", args=("20261122T180000-cccccccc",)))
         self.assertContains(page, "Nov 20, 11:00:00 AM")  # lodge time (UTC-7)
+        self.assertContains(page, f'href="{reverse("voice_status")}" aria-label="Back to Voice"')
         self.assertLess(body.index("cccccccc"), body.index("aaaaaaaa"))  # newest first
         self.assertEqual(self.client.get(
             reverse("voice_dataset_clip", args=("20261122T180000-cccccccc",)))["Content-Type"], "audio/wav")
