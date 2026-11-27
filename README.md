@@ -167,6 +167,12 @@ Admins can change these settings:
 - **Wake word**: Hey Jarvis (default), Alexa or Hey Mycroft.
 - **Detection threshold**: in percent, 50 by default. The hello message sends it as 0..1.
 - **Save detection clips**: on by default.
+- **Collect wake-word training clips** (`collect_clips`): on by default. Stores
+  audio around wakes and near-misses on the hub (see below).
+- **Collect threshold** (`collect_threshold`): in percent, 30 by default. Scores
+  at or above it save a training clip.
+- **Collect clips during guest stays** (`collect_during_stays`): off by default.
+- **Clips to keep** (`collect_max_clips`): 3000 by default (about 100 KB each).
 - **Voice assistant** (`enabled`): on by default. Off makes the screen only chime.
 - **Azure OpenAI API key** (`api_key`, secret).
 - **Azure OpenAI endpoint** (`endpoint`): `https://bdh-ai-lodge.openai.azure.com` by default.
@@ -190,6 +196,40 @@ Settings → Voice is for admins only. It shows:
 Clips cover 2 s before and 1 s after the wake. The app keeps the newest 100
 under `/data/voice/clips`, outside the media folder, so they are only served
 to admins.
+
+## Wake-word training clips
+
+To train a custom wake word (openWakeWord) on real audio from the screens, the
+app collects clips around every wake and near-miss.
+
+- **What.** Each time a screen's score peaks at or above the collect threshold
+  (30 % by default, below the wake threshold), one clip is saved per detection
+  event, at its peak: 2 s before to 1 s after, 16 kHz mono 16-bit WAV. Saving
+  runs on a background thread behind a bounded queue; clips are dropped rather
+  than slowing detection.
+- **Metadata.** A SQLite index (`/data/voice/dataset/index.sqlite3`, WAVs in
+  `/data/voice/dataset/clips/`) holds the time, screen, wake word, peak score,
+  thresholds and whether it woke the assistant. After a wake's conversation
+  ends, its outcome is joined in: end reason, duration, user turns, tool calls,
+  replies and the first user transcript (up to 200 characters).
+- **Suggested label.** `near_miss` (below the wake threshold), `likely_false`
+  (woke, then nobody spoke before it went idle, or the assistant ended it as
+  chatter), `likely_true` (someone spoke and the assistant replied or used a
+  tool), else `unknown`. Admins set the real label.
+- **Retention.** Up to **Clips to keep** clips; the oldest unlabelled clips are
+  deleted first, labelled ones only when they alone exceed the cap.
+- **Privacy.** Clips never leave the hub and audio is never logged. By default
+  nothing is stored while guests are staying (the app asks the hub through the
+  `stays.read` permission; if it can't tell, it doesn't record). Only admins
+  can reach the review page and the clips.
+
+**Settings → Wake-word clips** (`/voice/dataset/`, admins only) lists the clips
+newest first in lodge time (UTC−7), with score, whether it woke, the suggested
+label, the transcript and an audio player. Buttons label each clip a true or
+false wake, and the list filters by label. **Download dataset** gives a zip
+with `positive/`, `negative/` and `unlabelled/` folders (the admin's label,
+else the suggestion: `likely_true` is positive, `likely_false` and
+`near_miss` are negative) and a `metadata.jsonl` line per clip.
 
 ## Development
 

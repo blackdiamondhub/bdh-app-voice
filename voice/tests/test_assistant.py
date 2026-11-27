@@ -17,7 +17,7 @@ from bdh_sdk.tools import Tool, ToolError
 from django.test import SimpleTestCase
 from websockets.asyncio.server import serve
 
-from voice import assistant, config, listen
+from voice import assistant, config, dataset, listen
 from voice.audio import Resampler
 from voice.detector import CHUNK, SAMPLE_RATE, read_wav
 from voice.plugin import spec
@@ -323,6 +323,14 @@ class ConversationTests(_Assistant, SimpleTestCase):
         self.assertEqual(turns[0]["screen"], "192.168.10.50")
         self.assertTrue(turns[0]["sid"])
         self.assertEqual(assistant._active, {})
+
+        # The wake's training clip learned how the conversation went.
+        self.assertTrue(self.writer.flush())
+        [clip] = dataset.rows()
+        self.assertEqual((clip["fired"], clip["end_reason"], clip["user_turns"], clip["tool_calls"]),
+                         (1, "idle", 1, 1))
+        self.assertEqual(clip["transcript"], "Turn on the fireplace")
+        self.assertEqual(clip["auto_label"], dataset.LIKELY_TRUE)
 
     def test_tool_error_goes_back_to_the_model(self):
         def broken(args):

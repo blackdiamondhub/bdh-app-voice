@@ -1,0 +1,101 @@
+{% extends 'hub_settings/_layout.html' %}
+
+{% block title %}Wake-word clips{% endblock %}
+
+{% block section %}
+<style>
+    .vd-sec { margin: 22px 4px 10px; color: var(--mut); font-size: 12.5px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; }
+    .vd-tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+    .vd-tbl th { text-align: left; color: var(--mut); font-weight: 500; font-size: 13px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .vd-tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .vd-tbl tr:last-child td { border-bottom: 0; }
+    .vd-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .vd-tbl small { color: var(--mut); }
+    .vd-tbl audio { height: 32px; width: 200px; }
+    .vd-msg { color: var(--mut); padding: 14px 12px; font-size: 14px; line-height: 1.55; }
+    .vd-tx { max-width: 280px; color: #cfe4fa; font-size: 13.5px; }
+    .vd-lbl form { display: inline; }
+    .vd-lbl button { padding: 5px 10px; font-size: 13px; }
+    .vd-lbl button.on { border-color: var(--acc2); background: rgba(91,164,230,.18); }
+    .vd-yes { color: var(--ok); font-weight: 600; }
+    .vd-no { color: var(--red); font-weight: 600; }
+    .vd-filters { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 4px 12px; }
+    .vd-filters a { padding: 6px 12px; border: 1px solid var(--line); border-radius: 10px; text-decoration: none; color: inherit; font-size: 13.5px; }
+    .vd-filters a.on { border-color: var(--acc2); background: rgba(91,164,230,.12); }
+    .vd-filters a small { color: var(--mut); }
+    .vd-pages { display: flex; gap: 10px; justify-content: flex-end; margin: 12px 4px; }
+</style>
+
+<div class="hst-head">
+    <div>
+        <h2>Wake-word clips</h2>
+        <p>
+            {% if cfg.collect_clips %}
+            Collecting 3 s clips around scores of {{ pct.collect }}% or more (wakes need {{ pct.wake }}%),
+            {% if cfg.collect_during_stays %}also during guest stays{% else %}not during guest stays{% endif %}.
+            {% else %}
+            <span class="vd-no">Collecting is off.</span> Turn on “Collect wake-word training clips” in the Voice settings.
+            {% endif %}
+            Clips stay on this hub. Times are {{ timezone }}.
+        </p>
+    </div>
+    <div class="act">
+        <a class="hst-btn" style="display:flex;align-items:center;text-decoration:none" href="{% url 'voice_dataset_zip' %}">Download dataset</a>
+    </div>
+</div>
+
+<div class="vd-filters">
+    {% for key, name in filters %}
+    <a href="?{% if key %}label={{ key }}{% endif %}"{% if key == label %} class="on"{% endif %}>{{ name }}
+        {% if key == "" %}<small>{{ counts.all }}</small>{% else %}{% for k, n in counts.items %}{% if k == key %}<small>{{ n }}</small>{% endif %}{% endfor %}{% endif %}</a>
+    {% endfor %}
+</div>
+
+<div class="hst-card">
+    {% if items %}
+    <table class="vd-tbl">
+        <thead><tr><th>Time</th><th class="num">Score</th><th>Woke</th><th>Suggested</th><th>What was said</th><th>Audio</th><th>Label</th></tr></thead>
+        <tbody>
+        {% for c in items %}
+        <tr id="c-{{ c.id }}">
+            <td>{{ c.at_local }}<br><small>{{ c.screen }}{% if c.screen != c.ip %} · {{ c.ip }}{% endif %} · {{ c.word_label }}</small></td>
+            <td class="num">{% widthratio c.score 1 100 %}%</td>
+            <td>{% if c.fired %}Yes{% if c.end_reason %}<br><small>{{ c.end_reason }}, {{ c.user_turns|default:0 }} turn{{ c.user_turns|pluralize }}</small>{% endif %}{% else %}<small>No</small>{% endif %}</td>
+            <td>{{ c.auto_name }}</td>
+            <td class="vd-tx">{{ c.transcript|default:"" }}</td>
+            <td><audio controls preload="none" src="{% url 'voice_dataset_clip' c.id %}"></audio></td>
+            <td class="vd-lbl">
+                {% if c.label == "true" %}<span class="vd-yes">True wake</span>{% elif c.label == "false" %}<span class="vd-no">False wake</span>{% endif %}
+                <form method="post" action="{% url 'voice_dataset_label' c.id %}">
+                    {% csrf_token %}
+                    <input type="hidden" name="filter" value="{{ label }}"><input type="hidden" name="page" value="{{ page }}">
+                    {% if c.label != "true" %}<button class="hst-btn ghost" name="label" value="true">True wake</button>{% endif %}
+                    {% if c.label != "false" %}<button class="hst-btn ghost" name="label" value="false">False wake</button>{% endif %}
+                    {% if c.label %}<button class="hst-btn ghost" name="label" value="unset">Clear</button>{% endif %}
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="vd-msg">No clips{% if label %} with this label{% endif %} yet. They appear here after the wake word (or something close to it) is heard.</div>
+    {% endif %}
+</div>
+
+{% if prev_page or next_page %}
+<div class="vd-pages">
+    {% if prev_page %}<a class="hst-btn ghost" style="text-decoration:none" href="?{% if label %}label={{ label }}&amp;{% endif %}page={{ prev_page }}">‹ Newer</a>{% endif %}
+    {% if next_page %}<a class="hst-btn ghost" style="text-decoration:none" href="?{% if label %}label={{ label }}&amp;{% endif %}page={{ next_page }}">Older ›</a>{% endif %}
+</div>
+{% endif %}
+
+<div class="vd-sec">About the dataset</div>
+<div class="hst-card"><div class="vd-msg">
+    Each clip is 16 kHz mono 16-bit WAV, 2 s before the score's peak to 1 s after it: what openWakeWord trains on.
+    “Suggested” comes from what happened next: <b>likely true</b> when someone then spoke and the assistant replied or acted,
+    <b>likely false</b> when nobody spoke or the assistant ended it as chatter, <b>near miss</b> when the score stayed under the wake threshold.
+    The download sorts clips into <code>positive/</code>, <code>negative/</code> and <code>unlabelled/</code> by your label, else the suggestion
+    (near misses count as negative, unknown outcomes stay unlabelled), with <code>metadata.jsonl</code>. Up to {{ cfg.collect_max_clips }} clips are kept; the oldest unlabelled ones are deleted first.
+</div></div>
+{% endblock %}
