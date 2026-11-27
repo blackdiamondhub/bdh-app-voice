@@ -212,6 +212,28 @@ class SessionTests(_DataDir, SimpleTestCase):
         self.assertEqual(clips.detections()[0]["clip"], "")
         self.assertFalse((Path(self.tmp) / "clips").exists())
 
+    def test_no_clip_during_a_guest_stay(self):
+        self.stays.guest = True
+        s = self.session([3])
+        s.process(silence(3).tobytes())
+        self.assertEqual(clips.detections()[0]["clip"], "")
+        self.assertFalse((Path(self.tmp) / "clips").exists())
+
+    def test_no_audio_on_disk_during_a_guest_stay_with_defaults(self):
+        # Every way the app keeps audio must honour guest stays, not just the dataset.
+        self.stays.guest = True
+        s = self.session([3, 30])
+        for chunk in frames(silence(5)):
+            s.process(chunk)
+        dataset.writer.flush()
+        self.assertEqual([p for p in Path(self.tmp).rglob("*.wav")], [])
+
+    def test_clip_saved_during_an_owner_stay(self):
+        self.stays.guest = False
+        s = self.session([5])
+        s.process(silence(2).tobytes())
+        self.assertTrue(clips.detections()[0]["clip"])
+
     def test_level(self):
         self.assertEqual(listen.level_dbfs(silence(0.1)), listen.LEVEL_FLOOR)
         full = np.full(1600, 32767, dtype=np.int16)

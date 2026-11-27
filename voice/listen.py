@@ -223,7 +223,8 @@ class Session:
             "at": now.isoformat(), "screen": self.screen.display, "ip": self.screen.ip,
             "word": word, "score": round(score, 3), "clip": "",
         }
-        if self.cfg.save_clips:
+        # Debug clips are guest speech too: never kept while guests are staying.
+        if self.cfg.save_clips and not dataset.writer.stays.guest_staying():
             entry["clip"] = entry["id"] + ".wav"
             self.recorder.mark(entry["clip"], at_sample)
         log.info("wake %s %.2f from %s (%s)", word, score, self.screen.display, self.screen.ip)
