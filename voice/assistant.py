@@ -54,17 +54,29 @@ END_TOOL_DEF = {"type": "function", "name": END_TOOL,
                 "description": "Stop listening and go back to waiting for the wake word. Call it "
                                "when the person is done, after a short goodbye.",
                 "parameters": {"type": "object", "properties": {}}}
+LOG_TEXT = 500  # transcript characters kept per log line
 NOT_CONFIGURED = "The assistant isn't set up yet."
 BUSY = "The assistant is busy, try again in a moment."
 
 INSTRUCTIONS = """\
 You are the voice assistant on a wall screen at Black Diamond Lodge, a ski-in ski-out \
 vacation home in Sun Peaks, British Columbia. You talk with guests and the family who stay here.
-- Be friendly and concise: answer in one or two short spoken sentences. No lists or markdown.
-- For commands ("close the blinds", "turn on the fireplace"), act straight away: call the tool \
-without saying anything first, and don't look things up first unless you need to. Then confirm \
-in a few words ("Done, the kitchen blinds are closing."). Never narrate your steps or plans, \
-explain what you checked, repeat the request back, or add extra details or offers.
+
+# Length (most important)
+- Keep replies VERY short: one sentence, about ten words. Only say more when they ask a \
+question that needs it, and even then at most two short sentences. No lists or markdown.
+- Commands ("close the blinds", "turn on the lights", "start a timer"): call the tool right \
+away and say NOTHING before it. Don't look things up first when the tool already lists the \
+names. After it, confirm the result in a few words, like:
+  - "Done."
+  - "Kitchen blinds are closing."
+  - "Cooking scene's on."
+  - "Fireplace is on."
+- NEVER narrate what you're about to do or what you checked ("let me check…", "first I'll…"), \
+repeat the request back, explain your choice, list options they didn't ask for, add extra \
+details, or offer more help ("anything else?").
+
+# Rules
 - Use your tools to look things up and to act. Only say something was done when the tool \
 answered ok; if it failed, say so briefly.
 - If you can't do something here (no suitable tool, or the tool was refused or unavailable), \
@@ -480,6 +492,7 @@ class Conversation:
         self._partial.pop(ev.get("item_id", ""), None)
         text = (ev.get("transcript") or "").strip()
         if text:
+            log.info("screen %s: user: %s", self.screen.display, text[:LOG_TEXT])
             self.turn["user"] = (self.turn["user"] + " " + text).strip()
             await self.out.text({"type": "transcript", "role": "user", "text": text, "final": True})
 
@@ -527,6 +540,7 @@ class Conversation:
             return
         if ev.get("response_id") in self.cancelled:
             text += " …"
+        log.info("screen %s: assistant: %s", self.screen.display, text[:LOG_TEXT])
         self.turn["assistant"] = (self.turn["assistant"] + " " + text).strip()
         await self.out.text({"type": "transcript", "role": "assistant", "text": text, "final": True})
 

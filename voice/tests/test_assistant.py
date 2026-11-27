@@ -258,7 +258,13 @@ class ConversationTests(_Assistant, SimpleTestCase):
                     await until(lambda: rt.closed, what="realtime socket closed")
                     return rt, kiosk
 
-        rt, kiosk = asyncio.run(go())
+        with self.assertLogs("voice.assistant", "INFO") as logs:
+            rt, kiosk = asyncio.run(go())
+        # Both sides of the conversation are in the log, so a reply can be checked later.
+        self.assertIn("INFO:voice.assistant:screen 192.168.10.50: user: Turn on the fireplace",
+                      logs.output)
+        self.assertIn("INFO:voice.assistant:screen 192.168.10.50: assistant: The fireplace is on.",
+                      logs.output)
 
         # The model was set up for the lodge with the gateway's tools, and authenticated.
         self.assertEqual(rt.headers[0]["api-key"], KEY)

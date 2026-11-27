@@ -123,7 +123,10 @@ turn record holds:
  "tools": [{"name": "fireplace_on", "args": {}, "ok": true}]}
 ```
 
-The hub audits every tool call on its own `assistant/<sid>/…` events.
+The hub audits every tool call on its own `assistant/<sid>/…` events. The app's
+log (`docker logs bdh-app-voice`) has each final transcript, as `screen <ip>:
+user: …` and `screen <ip>: assistant: …` lines (up to 500 characters each), so
+you can check what was said and how long the replies were.
 
 ### Setting it up
 
