@@ -4,6 +4,7 @@ from bdh_sdk.plugins import BOOL, CHOICE, INT, LIFECYCLE_ALWAYS, NETWORK_LAN, SE
 from .config import (DEFAULT_COLLECT_THRESHOLD, DEFAULT_ENDPOINT, DEFAULT_FOLLOW_UP,
                      DEFAULT_MAX_CLIPS, DEFAULT_MAX_SECONDS, DEFAULT_MODEL, DEFAULT_VOICE, MODELS,
                      VOICES)
+from .detector import WAKE_WORDS
 
 spec = PluginSpec(
     id="voice",
@@ -15,8 +16,7 @@ spec = PluginSpec(
         Setting("listen", "Listen for the wake word", BOOL, True,
                 help="Off: screens are told to stop streaming and retry later."),
         Setting("wake_word", "Wake word", CHOICE, "hey_jarvis",
-                choices=(("hey_jarvis", "Hey Jarvis"), ("alexa", "Alexa"),
-                         ("hey_mycroft", "Hey Mycroft"))),
+                choices=tuple((word, label) for word, (_, label) in WAKE_WORDS.items())),
         Setting("threshold", "Detection threshold", INT, 50, minimum=1, maximum=99, unit="%",
                 help="Score a wake word needs. Lower hears more, and falsely more."),
         Setting("save_clips", "Save detection clips", BOOL, True,

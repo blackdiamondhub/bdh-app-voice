@@ -164,7 +164,8 @@ stopped speaking. Replies after a tool call took about 0.5 s more.
 Admins can change these settings:
 
 - **Listen for the wake word**: on by default.
-- **Wake word**: Hey Jarvis (default), Alexa or Hey Mycroft.
+- **Wake word**: Hey Jarvis (default), Alexa, Hey Mycroft or Hey Juniper (a custom
+  model, see below; its evaluation suggests a 60% threshold).
 - **Detection threshold**: in percent, 50 by default. The hello message sends it as 0..1.
 - **Save detection clips**: on by default.
 - **Collect wake-word training clips** (`collect_clips`): on by default. Stores
@@ -261,3 +262,7 @@ The ONNX models in `voice/models/` come from openWakeWord's
 - The pre-trained wake word models (`hey_jarvis`, `alexa` and `hey_mycroft`)
   are [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/).
   They are for non-commercial use only. This private hub is non-commercial.
+- `hey_juniper_v2.onnx` was trained with openWakeWord's training pipeline by
+  [bdh-wakeword](https://github.com/blackdiamondhub/bdh-wakeword) (release
+  [hey_juniper-v2](https://github.com/blackdiamondhub/bdh-wakeword/releases/tag/hey_juniper-v2),
+  with its evaluation report). Its training data has non-commercial terms too.
