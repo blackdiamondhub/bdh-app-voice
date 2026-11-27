@@ -40,6 +40,8 @@ WAKE_WORDS = {
     "hey_jarvis": ("hey_jarvis_v0.1.onnx", "Hey Jarvis"),
     "alexa": ("alexa_v0.1.onnx", "Alexa"),
     "hey_mycroft": ("hey_mycroft_v0.1.onnx", "Hey Mycroft"),
+    # Custom model from blackdiamondhub/bdh-wakeword (release hey_juniper-v2).
+    "hey_juniper": ("hey_juniper_v2.onnx", "Hey Juniper"),
 }
 DEFAULT_WORD = "hey_jarvis"
 

@@ -99,6 +99,15 @@ class DetectorTests(SimpleTestCase):
         with self.assertRaises(ValueError):
             Detector("ok_computer")
 
+    def test_hey_juniper_is_selectable_and_heard(self):
+        from voice.plugin import spec
+
+        choices = dict(next(s for s in spec.settings if s.key == "wake_word").choices)
+        self.assertEqual(choices["hey_juniper"], "Hey Juniper")
+        self.assertEqual(Detector("hey_juniper").wake_model.get_inputs()[0].shape, [1, 16, 96])
+        self.assertGreater(score_clip(read_wav(FIXTURES / "hey_juniper.wav"), "hey_juniper"), 0.5)
+        self.assertLess(score_clip(read_wav(FIXTURES / "hey_jarvis.wav"), "hey_juniper"), 0.5)
+
 
 class FakeDetector:
     """Scores 0 except at the given chunk numbers."""
