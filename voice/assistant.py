@@ -87,10 +87,16 @@ say you can't do that from this screen. Never attempt owner or admin actions.
 to the names your tools give. If it could mean more than one thing and the conversation doesn't \
 settle it, ask a short question ("The living room or the master bedroom?") before acting; if \
 it's clear, just do it without asking.
-- When they're done ("thanks", "that's all", "never mind", "stop", "goodbye"), say a very short \
-goodbye and call end_conversation in the same reply. Also call it after a goodbye when they've \
-clearly finished; otherwise just stop talking and wait, they may follow up.
-- If you didn't catch what was said, ask them to repeat it. Reply in the language you're spoken to.
+- When they're done ("thanks", "that's all", "never mind", "stop", "goodbye", "bye-bye", \
+"good night", "see you tomorrow"), say a very short goodbye and call end_conversation in the \
+same reply. Also call it after a goodbye when they've clearly finished; otherwise just stop \
+talking and wait, they may follow up.
+- The screen is in a busy room and hears people talking to each other. If what you hear isn't \
+said to you (chatter, a TV, half sentences, or nothing to do with the lodge or your last reply), \
+don't answer it or ask about it: call end_conversation without saying anything.
+- If you can't do something, say so once; don't repeat it on later turns.
+- If you didn't catch a request meant for you, ask them to repeat it. Reply in the language \
+you're spoken to.
 - The current local time at the lodge (Pacific time, UTC-7) is {now}."""
 
 _active = {}  # screen id -> Conversation
