@@ -268,9 +268,10 @@ class StayCheck:
         self.ttl = ttl
         self._at = None
         self._guest = None
+        self._current = None  # the last CurrentStay the hub reported (None between stays)
         self._warned = False
 
-    def guest_staying(self):
+    def _refresh(self):
         now = time.monotonic()
         if self._at is None or now - self._at >= self.ttl:
             self._at = now
@@ -278,13 +279,29 @@ class StayCheck:
                 from bdh_sdk import stays
 
                 current = stays.current()
+                self._current = current
                 self._guest = bool(current and not current.stay.owner)
                 self._warned = False
             except Exception as exc:
                 if not self._warned:
                     log.warning("can't tell whether guests are staying (%s)", exc)
                     self._warned = True
+
+    def guest_staying(self):
+        self._refresh()
         return True if self._guest is None else self._guest
+
+    def info(self):
+        """``{"stay", "stay_key", "stay_checkout"}``; ``stay`` is guest, owner, none or unknown."""
+        self._refresh()
+        if self._guest is None:
+            return {"stay": "unknown", "stay_key": "", "stay_checkout": ""}
+        current = self._current
+        if current is None:
+            return {"stay": "none", "stay_key": "", "stay_checkout": ""}
+        checkout = current.stay.checkout
+        return {"stay": "owner" if current.stay.owner else "guest", "stay_key": current.key or "",
+                "stay_checkout": checkout.isoformat() if checkout else ""}
 
 
 # --- the writer thread ----------------------------------------------------------------

@@ -113,20 +113,60 @@ A conversation ends:
 At most 2 conversations run at once. A third wake gets
 `conversation_end` with reason `busy`.
 
-Each turn is published on the app's own event topic `voice/conversation`. A
-turn record holds:
+### The conversation record
+
+Every conversation gets a `conversation_id` and its turns are numbered `seq`
+1, 2, 3…. A background thread stores the record in
+`/data/voice/conversations.sqlite3` first and only then publishes it on the
+app's own event topic `voice/conversation`:
+
+- a `turn` event per finished turn;
+- one `final` event per conversation with the whole record.
 
 ```json
-{"screen": "192.168.10.50", "ip": "192.168.10.50", "sid": "…", "mode": "guest",
- "model": "gpt-realtime-2.1-mini", "turn": 1, "at": "…Z",
- "user": "turn on the fireplace", "assistant": "The fireplace is on.",
- "tools": [{"name": "fireplace_on", "args": {}, "ok": true}]}
+{"kind": "final", "conversation_id": "9f…", "sid": "…", "screen": "192.168.10.50",
+ "mode": "guest", "model": "gpt-realtime-2.1-mini", "stay": "guest", "stay_key": "…",
+ "started_at": "…", "ended_at": "…", "end_reason": "idle", "seconds": 21.4,
+ "turn_count": 1, "user_turns": 1, "replies": 1, "tool_calls": 1,
+ "completeness": "complete", "missing": [], "replay": false,
+ "turns": [{"seq": 1, "at": "…", "user": "turn on the fireplace",
+            "assistant": "The fireplace is on.",
+            "tools": [{"name": "fireplace_on", "args": {}, "ok": true, "result": "{…}"}]}]}
 ```
 
-The hub audits every tool call on its own `assistant/<sid>/…` events. The app's
-log (`docker logs bdh-app-voice`) has each final transcript, as `screen <ip>:
-user: …` and `screen <ip>: assistant: …` lines (up to 500 characters each), so
-you can check what was said and how long the replies were.
+`tool_calls` counts every call, `end_conversation` included. Tool results are
+cut to 200 characters. `completeness` is:
+
+- `complete`: everything said and done was stored;
+- `partial`: something is known to be missing, listed in `missing`
+  (`write_failed`, `text_cut` past 4,000 characters, `too_many_turns` past
+  200, `dropped`, `event_trimmed` when the event had to be shortened to fit
+  the broker);
+- `unknown`: the app stopped mid-conversation; the record was closed on the
+  next start with `end_reason` `lost`.
+
+Events are live only. A consumer that missed some (the sentinel app)
+publishes `sentinel/sync` with `{"since": "<ISO time>"}` and the app
+republishes up to 100 final records that ended since then (at most 7 days
+back) with `"replay": true`. This needs the `events.subscribe:sentinel/sync`
+permission.
+
+Admins see the records in Settings → Voice → **Conversations** (a list and
+each conversation's turns and tool calls). Records are kept:
+
+- during a guest stay: until **Keep guest conversations** days (7 by default)
+  after the guests check out;
+- otherwise (owner stays, between stays): **Keep other conversations** days (30
+  by default) after they started.
+
+The hub audits every tool call on its own `assistant/<sid>/…` events.
+
+The app's log (`docker logs bdh-app-voice`) has each final transcript, as
+`screen <ip>: user: …` and `screen <ip>: assistant: …` lines (up to 500
+characters each), only during owner stays and between stays. While guests
+are staying, or when the hub can't say who is, the log only has the length
+and the conversation id (`user: (42 chars, conversation 9f…)`); the words are
+only in the record.
 
 ### Setting it up
 
@@ -188,6 +228,8 @@ Admins can change these settings:
   "the fireplace here" works and loose requests favour that room. One room for
   every screen (`the great room, by the Living Room Fireplace`) or per screen
   by IP or name (`192.168.10.195=great room; 192.168.10.196=kitchen`).
+- **Keep guest conversations** (`transcript_guest_days`): 7 days after checkout by default.
+- **Keep other conversations** (`transcript_days`): 30 days by default.
 
 Settings → Voice is for admins only. It shows:
 

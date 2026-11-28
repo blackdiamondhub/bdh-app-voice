@@ -10,4 +10,6 @@ urlpatterns = [
     path("dataset/download.zip", views.dataset_zip, name="voice_dataset_zip"),
     path("dataset/<str:clip_id>.wav", views.dataset_clip, name="voice_dataset_clip"),
     path("dataset/<str:clip_id>/label", views.dataset_label, name="voice_dataset_label"),
+    path("conversations/", views.conversations_page, name="voice_conversations"),
+    path("conversations/<str:conversation_id>/", views.conversation_page, name="voice_conversation"),
 ]

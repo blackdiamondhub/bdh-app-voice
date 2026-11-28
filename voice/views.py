@@ -9,7 +9,7 @@ from django.urls import reverse
 from django.utils import timezone as dj_timezone
 from django.views.decorators.http import require_GET, require_POST
 
-from . import clips, config, dataset
+from . import clips, config, conversations, dataset
 from .assistant import LODGE_UTC_OFFSET
 from .detector import WAKE_WORDS
 from .listen import screens
@@ -166,3 +166,55 @@ def dataset_zip(request):
     response = StreamingHttpResponse(dataset.zip_stream(), content_type="application/zip")
     response["Content-Disposition"] = f'attachment; filename="wake-word-clips-{stamp}.zip"'
     return response
+
+
+# --- conversations (the assistant's record) -------------------------------------------
+
+CONVERSATIONS_PAGE = 50
+STAY_NAMES = {"guest": "Guest stay", "owner": "Owner stay", "none": "Between stays",
+              "unknown": "Stay unknown"}
+
+
+def _lodge_time(iso):
+    try:
+        return _fmt(datetime.fromisoformat(iso).astimezone(timezone(LODGE_UTC_OFFSET, "PT")))
+    except (TypeError, ValueError):
+        return iso or ""
+
+
+def _conversation_row(row):
+    row["started_local"] = _lodge_time(row.get("started_at"))
+    row["stay_name"] = STAY_NAMES.get(row.get("stay"), row.get("stay") or "")
+    cfg = config.current()
+    row["expires_local"] = _lodge_time(conversations.expires_at(
+        row, cfg.transcript_guest_days, cfg.transcript_days).isoformat())
+    return row
+
+
+@require_GET
+def conversations_page(request):
+    _admin_only(request)
+    page = _page(request)
+    items = [_conversation_row(r) for r in conversations.rows(CONVERSATIONS_PAGE,
+                                                               (page - 1) * CONVERSATIONS_PAGE)]
+    total = conversations.count()
+    cfg = config.current()
+    return render(request, "voice/settings_conversations.html", {
+        "active": "voice", "items": items, "total": total, "page": page,
+        "prev_page": page - 1 if page > 1 else None,
+        "next_page": page + 1 if page * CONVERSATIONS_PAGE < total else None,
+        "cfg": cfg, "timezone": "Pacific (UTC-7)",
+    })
+
+
+@require_GET
+def conversation_page(request, conversation_id):
+    _admin_only(request)
+    rec = conversations.get(conversation_id)
+    if rec is None:
+        raise Http404
+    rec = _conversation_row(rec)
+    for turn in rec["turns"]:
+        turn["at_local"] = _lodge_time(turn.get("at"))
+    return render(request, "voice/settings_conversation.html", {
+        "active": "voice", "c": rec, "timezone": "Pacific (UTC-7)"})

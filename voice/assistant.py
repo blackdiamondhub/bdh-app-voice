@@ -18,8 +18,10 @@ The server's semantic VAD ends the user's turns and starts replies. The
 conversation ends after ``follow_up_seconds`` without speech once the last
 reply has played, once the goodbye has played after the model calls the
 built-in :data:`END_TOOL`, after ``max_seconds``, on a realtime error, or when the
-screen goes away. Each finished turn is published as a hub event on
-``voice/conversation`` for a future supervisor.
+screen goes away. Each conversation is recorded (:mod:`voice.conversations`):
+every finished turn and the final record are stored on the hub, then published
+as hub events on ``voice/conversation`` for the sentinel. While a guest may be
+staying, the log only says how long what was said was, never the words.
 """
 import asyncio
 import base64
@@ -30,9 +32,10 @@ import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import websockets
-from bdh_sdk import events, rpc, tools
+from bdh_sdk import rpc, tools
 
 from . import config, dataset
+from . import conversations as records
 from .audio import MODEL_RATE, Resampler
 
 log = logging.getLogger(__name__)
@@ -43,7 +46,7 @@ MAX_PENDING_SECONDS = 5.0  # mic audio kept while the realtime socket connects
 AUDIO_FRAME_BYTES = 9600  # 200 ms of 24 kHz int16 per binary frame to the kiosk
 PLAYBACK_MARGIN = 0.5  # seconds of kiosk buffering on top of the audio sent
 MAX_TOOL_OUTPUT = 8000  # characters of a tool result given back to the model
-EVENT_TOPIC = "voice/conversation"
+EVENT_TOPIC = records.TOPIC
 TRANSCRIPTION_MODEL = "whisper-1"  # the one deployed next to the realtime models
 LODGE_UTC_OFFSET = timedelta(hours=-7)  # America/Vancouver: permanent UTC-7 since Nov 2026
 # Errors the API sends for races that don't matter (cancel after the reply ended, …).
@@ -289,6 +292,15 @@ class Conversation:
         self.turn = self._new_turn()
         self.turns = 0
         self._partial = {}  # item id -> text so far
+        # The durable record (voice.conversations).
+        self.conversation_id = records.new_id()
+        self.started_at = records.now_iso()
+        self.stay = {"stay": records.STAY_UNKNOWN, "stay_key": "", "stay_checkout": ""}
+        self.private = True  # keep what's said out of the log (until we know nobody's a guest)
+        self.seq = 0  # turns recorded
+        self.all_tool_calls = 0  # every tool call, end_conversation included
+        self.missing = set()  # why the record is incomplete
+        self._recorded = False
         # How it went, for the wake's training clip.
         self.clip_id = None
         self.user_turns = 0
@@ -394,8 +406,9 @@ class Conversation:
         if _active.get(self.screen.id) is self:
             del _active[self.screen.id]
         seconds = time.monotonic() - self.started
-        log.info("screen %s: conversation ended (%s) after %.0f s, %d turns", self.screen.display,
-                 self.reason, seconds, self.turns)
+        log.info("screen %s: conversation %s ended (%s) after %.0f s, %d turns", self.screen.display,
+                 self.conversation_id, self.reason, seconds, self.turns)
+        self._record_end(seconds)
         try:
             dataset.outcome(self.clip_id, reason=self.reason, duration=seconds,
                             user_turns=self.user_turns, tool_calls=self.tool_calls,
@@ -424,8 +437,16 @@ class Conversation:
         log.info("screen %s: conversation %s (%s) with %d tools", self.screen.display,
                  self.sid or "-", self.mode or "no gateway", len(self.tools))
 
+    async def _check_stay(self):
+        try:
+            self.stay = await asyncio.to_thread(records.stay_info)
+        except Exception as exc:
+            log.warning("screen %s: can't tell who is staying (%s)", self.screen.display, exc)
+        self.private = records.private(self.stay.get("stay"))
+
     async def _converse(self):
-        await self._open_tools()
+        await asyncio.gather(self._open_tools(), self._check_stay())
+        self._record_start()
         url = realtime_url(self.cfg.endpoint, self.cfg.model)
         async with websockets.connect(url, additional_headers={"api-key": self._key},
                                       open_timeout=CONNECT_TIMEOUT, max_size=16 * 2 ** 20,
@@ -521,7 +542,7 @@ class Conversation:
         self._partial.pop(ev.get("item_id", ""), None)
         text = (ev.get("transcript") or "").strip()
         if text:
-            log.info("screen %s: user: %s", self.screen.display, text[:LOG_TEXT])
+            log.info("screen %s: user: %s", self.screen.display, self._loggable(text))
             self.user_turns += 1
             self.first_user = self.first_user or text
             self.turn["user"] = (self.turn["user"] + " " + text).strip()
@@ -571,7 +592,7 @@ class Conversation:
             return
         if ev.get("response_id") in self.cancelled:
             text += " …"
-        log.info("screen %s: assistant: %s", self.screen.display, text[:LOG_TEXT])
+        log.info("screen %s: assistant: %s", self.screen.display, self._loggable(text))
         self.replies += 1
         self.turn["assistant"] = (self.turn["assistant"] + " " + text).strip()
         await self.out.text({"type": "transcript", "role": "assistant", "text": text, "final": True})
@@ -583,10 +604,12 @@ class Conversation:
         call_id = item.get("call_id") or ""
         if item.get("name") == END_TOOL:
             self.ending = True
+            self.all_tool_calls += 1
             self.turn["tools"].append({"name": END_TOOL, "args": {}, "ok": True})
             log.info("screen %s: the assistant ended the conversation", self.screen.display)
             return
         self.tool_calls += 1
+        self.all_tool_calls += 1
         self.tool_tasks[call_id] = asyncio.ensure_future(self._run_tool(ws, item))
 
     async def _on_response_done(self, ws, ev):
@@ -665,7 +688,9 @@ class Conversation:
             result = await asyncio.to_thread(self._call, name, args)
         ok = bool(result.get("ok"))
         summary = {"name": name, "args": args, "ok": ok}
-        if not ok:
+        if ok:
+            summary["result"] = json.dumps(result, default=str)[:records.RESULT_CHARS]
+        else:
             summary["error"] = str(result.get("error") or "")[:200]
         self.turn["tools"].append(summary)
         log.info("screen %s: tool %s -> %s", self.screen.display, name, "ok" if ok else result.get("error"))
@@ -696,15 +721,52 @@ class Conversation:
     def _new_turn(self):
         return {"user": "", "assistant": "", "tools": []}
 
+    def _loggable(self, text):
+        """What the log may say: the words, or only their length while guests may be staying."""
+        if self.private:
+            return f"({len(text)} chars, conversation {self.conversation_id})"
+        return text[:LOG_TEXT]
+
+    def _header(self):
+        return {"screen": self.screen.display, "ip": self.screen.ip, "sid": self.sid,
+                "mode": self.mode, "model": self.cfg.model}
+
+    def _record_start(self):
+        if self._recorded:
+            return
+        self._recorded = True
+        if not records.recorder.started(self.conversation_id, {
+                **self._header(), **self.stay, "started_at": self.started_at}):
+            self.missing.add("dropped")
+
+    def _record_end(self, seconds):
+        try:
+            self._record_start()
+            records.recorder.finished(self.conversation_id, {
+                **self._header(), **self.stay, "started_at": self.started_at,
+                "ended_at": records.now_iso(), "end_reason": self.reason,
+                "seconds": round(seconds, 1), "turn_count": self.seq,
+                "user_turns": self.user_turns, "replies": self.replies,
+                "tool_calls": self.all_tool_calls, "missing": sorted(self.missing)})
+        except Exception:
+            log.exception("could not record the conversation")
+
     def _publish_turn(self):
+        """Record the finished turn; the recorder stores it, then publishes it."""
         turn, self.turn = self.turn, self._new_turn()
         if not (turn["user"] or turn["assistant"] or turn["tools"]):
             return
-        try:
-            events.publish(EVENT_TOPIC, {
-                "screen": self.screen.display, "ip": self.screen.ip, "sid": self.sid,
-                "mode": self.mode, "model": self.cfg.model, "turn": self.turns,
-                "at": datetime.now(timezone.utc).isoformat(), **turn})
-        except Exception:
-            log.exception("could not publish the conversation turn")
+        if self.seq >= records.MAX_TURNS:
+            self.missing.add("too_many_turns")
+            return
+        self._record_start()
+        self.seq += 1
+        user, cut_user = records.clip_text(turn["user"])
+        assistant, cut_assistant = records.clip_text(turn["assistant"])
+        if cut_user or cut_assistant:
+            self.missing.add("text_cut")
+        record = {"seq": self.seq, "at": datetime.now(timezone.utc).isoformat(), "user": user,
+                  "assistant": assistant, "tools": turn["tools"]}
+        if not records.recorder.turn(self.conversation_id, record, self._header()):
+            self.missing.add("dropped")
 

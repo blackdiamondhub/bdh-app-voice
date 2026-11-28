@@ -27,6 +27,8 @@ VOICES = ("marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "
 DEFAULT_VOICE = "marin"
 DEFAULT_MAX_SECONDS = 90
 DEFAULT_FOLLOW_UP = 5
+DEFAULT_TRANSCRIPT_GUEST_DAYS = 7
+DEFAULT_TRANSCRIPT_DAYS = 30
 
 
 @dataclass(frozen=True)
@@ -50,6 +52,9 @@ class Config:
     instructions: str = ""
     # "<screen ip or name>=<room>; ..." or just "<room>" for every screen.
     screen_rooms: str = ""
+    # How long conversation records (Settings → Conversations) are kept.
+    transcript_guest_days: int = DEFAULT_TRANSCRIPT_GUEST_DAYS  # after a guest stay's checkout
+    transcript_days: int = DEFAULT_TRANSCRIPT_DAYS  # after any other conversation
 
 
 def room_for(cfg, *screen_ids):
@@ -103,6 +108,8 @@ def load():
         follow_up_seconds=_int("follow_up_seconds", DEFAULT_FOLLOW_UP, 2, 60),
         instructions=str(app_setting(APP_ID, "instructions", "") or "").strip(),
         screen_rooms=str(app_setting(APP_ID, "screen_rooms", "") or "").strip(),
+        transcript_guest_days=_int("transcript_guest_days", DEFAULT_TRANSCRIPT_GUEST_DAYS, 0, 365),
+        transcript_days=_int("transcript_days", DEFAULT_TRANSCRIPT_DAYS, 1, 365),
     )
 
 
