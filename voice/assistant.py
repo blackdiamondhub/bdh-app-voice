@@ -60,6 +60,18 @@ END_TOOL_DEF = {"type": "function", "name": END_TOOL,
 LOG_TEXT = 500  # transcript characters kept per log line
 NOT_CONFIGURED = "The assistant isn't set up yet."
 BUSY = "The assistant is busy, try again in a moment."
+# When the model drops a turn (content filter, failure) the user still hears something:
+# one short out-of-band reply per user turn, never a loop.
+FAILED_STATUSES = ("failed", "incomplete")
+CONTENT_FILTER = "content_filter"
+RECOVERY_BLOCKED = "Sorry, I can't help with that."
+RECOVERY_ERROR = "Sorry, something went wrong, try again."
+RECOVERY_UNHEARD = "Sorry, I didn't catch that."
+RECOVERY_INSTRUCTIONS = 'Say only this, in a friendly voice, and nothing else: "{text}"'
+RECOVERY_GRACE = 1.5  # seconds to wait for the model's own reply after a failed transcription
+NOT_TRANSCRIBED = "[not transcribed]"
+_FILTER_WORDS = ("content_filter", "content_policy", "contentfilter", "jailbreak", "responsibleai",
+                 "prompt_shield")
 
 INSTRUCTIONS = """\
 You are the voice assistant on a wall screen at Black Diamond Lodge, a ski-in ski-out \
@@ -174,6 +186,12 @@ def session_update(cfg, tool_defs, now=None, room=""):
             "output": {"format": {"type": "audio/pcm", "rate": MODEL_RATE}, "voice": cfg.voice},
         },
     }}
+
+
+def filtered(*texts):
+    """Whether an error code/type/message says a content filter blocked it."""
+    joined = " ".join(str(t or "") for t in texts).lower().replace("-", "_")
+    return any(w in joined for w in _FILTER_WORDS)
 
 
 class RealtimeError(Exception):
@@ -292,6 +310,17 @@ class Conversation:
         self.turn = self._new_turn()
         self.turns = 0
         self._partial = {}  # item id -> text so far
+        self._heard = {}  # user item id -> partial transcript (kept if the final never comes)
+        self._taken = {}  # user item id -> its partial text, already put in a turn
+        # Dropped turns (content filter, failures): one audible recovery per user turn.
+        self._responded = True  # a response started since the user last stopped speaking
+        self._recovered = False
+        self._recovery_pending = False  # our response.create, until its response.created
+        self._recovery_id = None
+        self._recoveries = 0
+        self._audible = set()  # response ids that produced audio
+        self._grace = None
+        self._unhandled = set()
         # The durable record (voice.conversations).
         self.conversation_id = records.new_id()
         self.started_at = records.now_iso()
@@ -394,6 +423,8 @@ class Conversation:
     async def _finish(self, message):
         for t in list(self.tool_tasks.values()):
             t.cancel()
+        if self._grace:
+            self._grace.cancel()
         if self.speaking and self.reason not in ("idle", "done"):
             await self.out.text({"type": "speak_stop"})
         self.speaking = False
@@ -492,7 +523,8 @@ class Conversation:
         while True:
             await asyncio.sleep(0.2)
             now = time.monotonic()
-            busy = (self.user_speaking or self.response_id or self.tool_tasks or self.followups)
+            busy = (self.user_speaking or self.response_id or self.tool_tasks or self.followups
+                    or self._recovery_pending)
             if busy:
                 continue
             quiet_since = max(self.last_activity, self.playback_end)
@@ -508,12 +540,26 @@ class Conversation:
             if isinstance(raw, bytes):
                 continue
             ev = json.loads(raw)
-            handler = getattr(self, "_on_" + ev.get("type", "").replace(".", "_"), None)
+            kind = ev.get("type", "")
+            handler = getattr(self, "_on_" + kind.replace(".", "_"), None)
             if handler:
                 await handler(ws, ev)
+            elif ("failed" in kind or "error" in kind) and kind not in self._unhandled:
+                # A new way for the API to drop a turn must at least show up in the log.
+                self._unhandled.add(kind)
+                log.warning("screen %s: unhandled realtime event %s: %s", self.screen.display, kind,
+                            json.dumps(ev.get("error") or {}, default=str)[:300])
 
     async def _on_error(self, ws, ev):
         err = ev.get("error") or {}
+        if self._recovery_pending and err.get("event_id") == self._recovery_id:
+            # The recovery reply was refused: give up on it and listen again.
+            log.warning("screen %s: recovery reply refused: %s: %s", self.screen.display,
+                        err.get("code") or err.get("type"), err.get("message"))
+            self._recovery_pending = False
+            self._publish_turn()
+            await self._listen_if_idle()
+            return
         if err.get("code") in HARMLESS_ERRORS:
             return
         log.warning("screen %s: realtime error event %s: %s", self.screen.display,
@@ -522,6 +568,7 @@ class Conversation:
     async def _on_input_audio_buffer_speech_started(self, ws, ev):
         self.user_speaking = True
         self.ending = False  # "oh, one more thing…"
+        self._recovered = False  # a new user turn may get its own recovery
         self.last_activity = time.monotonic()
         if self._playing():
             await self._barge_in(ws, ev)
@@ -529,27 +576,57 @@ class Conversation:
 
     async def _on_input_audio_buffer_speech_stopped(self, ws, ev):
         self.user_speaking = False
+        self._responded = False
         self.last_activity = time.monotonic()
         await self._set_state("thinking")
 
     async def _on_conversation_item_input_audio_transcription_delta(self, ws, ev):
         key = ev.get("item_id", "")
         self._partial[key] = self._partial.get(key, "") + (ev.get("delta") or "")
+        self._heard[key] = self._partial[key]
         await self.out.text({"type": "transcript", "role": "user", "text": self._partial[key],
                              "final": False})
 
     async def _on_conversation_item_input_audio_transcription_completed(self, ws, ev):
-        self._partial.pop(ev.get("item_id", ""), None)
+        key = ev.get("item_id", "")
+        self._partial.pop(key, None)
+        self._heard.pop(key, None)
         text = (ev.get("transcript") or "").strip()
         if text:
             log.info("screen %s: user: %s", self.screen.display, self._loggable(text))
             self.user_turns += 1
             self.first_user = self.first_user or text
-            self.turn["user"] = (self.turn["user"] + " " + text).strip()
+            if self._taken.pop(key, None) is None:
+                self.turn["user"] = (self.turn["user"] + " " + text).strip()
+            # else: its partial text is already in a recorded turn
             await self.out.text({"type": "transcript", "role": "user", "text": text, "final": True})
+
+    async def _on_conversation_item_input_audio_transcription_failed(self, ws, ev):
+        key = ev.get("item_id", "")
+        err = ev.get("error") or {}
+        reason = err.get("code") or err.get("type") or "unknown"
+        if filtered(reason, err.get("type"), err.get("message")):
+            reason = CONTENT_FILTER
+        heard = (self._heard.get(key) or self._taken.get(key) or "").strip()
+        log.warning("screen %s: transcription failed (%s): %s; heard %s", self.screen.display, reason,
+                    str(err.get("message") or "")[:200], self._loggable(heard) if heard else "nothing")
+        self._issue("transcription_failed", reason, err.get("message"))
+        if key not in self._taken and not await self._take_heard(key):
+            self.turn["user"] = (self.turn["user"] + " " + NOT_TRANSCRIBED).strip()
+        if not self._responded and not self.response_id:
+            # The model may still answer what it heard; if it doesn't, say something.
+            if self._grace:
+                self._grace.cancel()
+            self._grace = asyncio.ensure_future(self._recover_if_unanswered(ws, reason))
+        else:
+            await self._listen_if_idle()
 
     async def _on_response_created(self, ws, ev):
         self.response_id = (ev.get("response") or {}).get("id") or "?"
+        self._responded = True
+        if self._recovery_pending:
+            self._recovery_pending = False
+            self._recovery_id = self.response_id
         self.last_activity = time.monotonic()
         if self.followups == 0 and not self.user_speaking:
             await self._set_state("thinking")
@@ -560,6 +637,7 @@ class Conversation:
         data = base64.b64decode(ev.get("delta") or "")
         if not data:
             return
+        self._audible.add(ev.get("response_id"))
         now = time.monotonic()
         if not self.speaking:
             self.speaking = True
@@ -621,6 +699,9 @@ class Conversation:
                  if o.get("type") == "function_call" and o.get("call_id") and o.get("name") != END_TOOL]
         if response.get("status") == "cancelled":
             return  # the user spoke over it; their next turn gets its own reply
+        if response.get("status") in FAILED_STATUSES:
+            if await self._dropped(ws, response, bool(calls)):
+                return  # the recovery reply finishes the turn
         if calls:
             self.followups += 1
             await self._set_state("thinking")
@@ -633,6 +714,86 @@ class Conversation:
 
     def _playing(self):
         return self.speaking or time.monotonic() < self.playback_end - PLAYBACK_MARGIN
+
+    # --- dropped turns ------------------------------------------------------------------
+
+    async def _dropped(self, ws, response, calls):
+        """A ``failed``/``incomplete`` response: log and record why, and make sure the user
+        hears something. True when a recovery reply was asked for."""
+        status = response.get("status")
+        rid = response.get("id")
+        details = response.get("status_details") or {}
+        err = details.get("error") or {}
+        reason = details.get("reason") or err.get("code") or err.get("type") or status
+        if filtered(reason, err.get("code"), err.get("type"), err.get("message")):
+            reason = CONTENT_FILTER
+        recovery = bool(rid) and rid == self._recovery_id
+        log.warning("screen %s: %sresponse %s %s (%s)%s", self.screen.display,
+                    "recovery " if recovery else "", rid or "-", status, reason,
+                    f": {str(err.get('message'))[:200]}" if err.get("message") else "")
+        self._issue("response_" + status, reason, err.get("message"), recovery=recovery)
+        for key in list(self._heard):
+            await self._take_heard(key)  # its transcript may never come now
+        if calls or recovery or rid in self._audible:
+            return False
+        return await self._recover(ws, RECOVERY_BLOCKED if reason == CONTENT_FILTER else RECOVERY_ERROR)
+
+    async def _recover(self, ws, text):
+        """One short out-of-band reply ("Sorry, I can't help with that.") per user turn.
+
+        Out of band (no conversation context), so whatever the filter blocked isn't sent again.
+        """
+        if self._recovered or self.reason:
+            return False
+        self._recovered = True
+        self._recovery_pending = True
+        self._recoveries += 1
+        self._recovery_id = f"recover_{self.conversation_id[:8]}_{self._recoveries}"
+        self.last_activity = time.monotonic()
+        log.info("screen %s: telling the user: %s", self.screen.display, text)
+        await ws.send(json.dumps({"type": "response.create", "event_id": self._recovery_id, "response": {
+            "conversation": "none", "input": [], "tool_choice": "none", "output_modalities": ["audio"],
+            "instructions": RECOVERY_INSTRUCTIONS.format(text=text)}}))
+        return True
+
+    async def _recover_if_unanswered(self, ws, reason):
+        """After a failed transcription: speak up if the model doesn't answer by itself."""
+        try:
+            await asyncio.sleep(RECOVERY_GRACE)
+            if self._responded or self.response_id or self.reason or self.user_speaking:
+                return
+            if not await self._recover(ws, RECOVERY_BLOCKED if reason == CONTENT_FILTER
+                                       else RECOVERY_UNHEARD):
+                self._publish_turn()
+                await self._listen_if_idle()
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.exception("screen %s: could not recover a dropped turn", self.screen.display)
+
+    async def _take_heard(self, key):
+        """Keep a user item's partial transcript in the turn and show it as final. True if any."""
+        self._partial.pop(key, None)
+        heard = (self._heard.pop(key, "") or "").strip()
+        if not heard:
+            return False
+        self._taken[key] = heard
+        self.turn["user"] = (self.turn["user"] + " " + heard).strip()
+        await self.out.text({"type": "transcript", "role": "user", "text": heard, "final": True})
+        return True
+
+    def _issue(self, kind, reason, message=None, recovery=False):
+        issue = {"kind": kind, "reason": str(reason or "")[:80]}
+        if message:
+            issue["message"] = str(message)[:200]
+        if recovery:
+            issue["recovery"] = True
+        self.turn["issues"].append(issue)
+
+    async def _listen_if_idle(self):
+        if not (self.user_speaking or self.response_id or self.followups or self._recovery_pending
+                or self.speaking):
+            await self._set_state("listening")
 
     async def _barge_in(self, ws, ev):
         """The user spoke over the reply: stop the screen and the model."""
@@ -719,7 +880,7 @@ class Conversation:
     # --- the record for the supervisor ------------------------------------------------
 
     def _new_turn(self):
-        return {"user": "", "assistant": "", "tools": []}
+        return {"user": "", "assistant": "", "tools": [], "issues": []}
 
     def _loggable(self, text):
         """What the log may say: the words, or only their length while guests may be staying."""
@@ -754,7 +915,7 @@ class Conversation:
     def _publish_turn(self):
         """Record the finished turn; the recorder stores it, then publishes it."""
         turn, self.turn = self.turn, self._new_turn()
-        if not (turn["user"] or turn["assistant"] or turn["tools"]):
+        if not (turn["user"] or turn["assistant"] or turn["tools"] or turn["issues"]):
             return
         if self.seq >= records.MAX_TURNS:
             self.missing.add("too_many_turns")
@@ -766,7 +927,7 @@ class Conversation:
         if cut_user or cut_assistant:
             self.missing.add("text_cut")
         record = {"seq": self.seq, "at": datetime.now(timezone.utc).isoformat(), "user": user,
-                  "assistant": assistant, "tools": turn["tools"]}
+                  "assistant": assistant, "tools": turn["tools"], "issues": turn["issues"]}
         if not records.recorder.turn(self.conversation_id, record, self._header()):
             self.missing.add("dropped")
 

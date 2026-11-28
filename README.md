@@ -97,6 +97,24 @@ When the user speaks over a reply, the app:
 - truncates the reply at the point the screen has played;
 - cancels the response if it is still running.
 
+When the model drops a turn, the user still hears why and the log and record
+say so:
+
+- a `response.done` with status `failed` or `incomplete` (for example the
+  content filter blocking "ignore your previous instructions…") is logged as a
+  warning with its reason and, if no audio played, followed by one short
+  out-of-band reply ("Sorry, I can't help with that." for the content filter,
+  "Sorry, something went wrong, try again." otherwise). At most one such reply
+  per user turn; if it fails too, the screen just listens again;
+- a failed input transcription is logged as a warning; the partial transcript
+  the screen showed (or `[not transcribed]`) is kept in the turn, the caption
+  is made final, and if the model doesn't answer within 1.5 s the user hears
+  "Sorry, I didn't catch that." (or the content-filter reply);
+- any other server event with `failed` or `error` in its name that the app
+  doesn't handle is logged once per conversation.
+
+Each of these is listed in the turn's `issues`.
+
 A conversation ends:
 
 - after **Wait for a follow-up** seconds of silence once the last reply has
@@ -131,8 +149,15 @@ app's own event topic `voice/conversation`:
  "completeness": "complete", "missing": [], "replay": false,
  "turns": [{"seq": 1, "at": "…", "user": "turn on the fireplace",
             "assistant": "The fireplace is on.",
-            "tools": [{"name": "fireplace_on", "args": {}, "ok": true, "result": "{…}"}]}]}
+            "tools": [{"name": "fireplace_on", "args": {}, "ok": true, "result": "{…}"}],
+            "issues": []}]}
 ```
+
+`issues` lists why the model dropped or cut a turn, e.g.
+`{"kind": "response_incomplete", "reason": "content_filter"}`,
+`{"kind": "response_failed", "reason": "server_error", "message": "…"}` or
+`{"kind": "transcription_failed", "reason": "…"}`; `"recovery": true` marks
+the short reply that told the user.
 
 `tool_calls` counts every call, `end_conversation` included. Tool results are
 cut to 200 characters. `completeness` is:
