@@ -69,6 +69,24 @@ class RecordTests(_Broker, SimpleTestCase):
         self.assertEqual(rec["completeness"], "partial")
         self.assertIn("turns_missing", rec["missing"])
 
+    def test_a_database_from_before_issues_is_migrated(self):
+        import sqlite3
+        conversations.path().parent.mkdir(parents=True, exist_ok=True)
+        db = sqlite3.connect(str(conversations.path()))
+        db.execute("CREATE TABLE turns (conversation_id TEXT, seq INTEGER, at TEXT, user TEXT, "
+                   "assistant TEXT, tools TEXT, PRIMARY KEY (conversation_id, seq))")
+        db.execute("INSERT INTO turns VALUES ('old', 1, 'x', 'hi', 'hello', '[]')")
+        db.commit()
+        db.close()
+        conversations._migrated.discard(str(conversations.path()))
+        self.recorder.turn("c1", {"seq": 1, "at": T0.isoformat(), "user": "", "assistant": "", "tools": [],
+                                  "issues": [{"kind": "response_incomplete", "reason": "content_filter"}]},
+                           {"screen": "lobby"})
+        self.assertTrue(self.recorder.flush())
+        self.assertEqual(conversations._turns("c1")[0]["issues"],
+                         [{"kind": "response_incomplete", "reason": "content_filter"}])
+        self.assertEqual(conversations._turns("old")[0]["issues"], [])
+
     def test_a_reported_gap_makes_the_record_partial(self):
         record(self.recorder, "c1", summary={"missing": ["too_many_turns"]})
         self.assertEqual(conversations.get("c1")["completeness"], "partial")

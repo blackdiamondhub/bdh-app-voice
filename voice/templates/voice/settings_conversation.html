@@ -47,6 +47,9 @@
         <div class="vc-tool{% if not tool.ok %} vc-bad{% endif %}">→ {{ tool.name }} {{ tool.args|default_if_none:"(bad arguments)" }}{% if tool.ok %} ✓{% if tool.result %} {{ tool.result }}{% endif %}{% else %} ✗ {{ tool.error }}{% endif %}</div>
         {% endfor %}
         {% if t.assistant %}<div><span class="vc-who">Assistant</span>{{ t.assistant }}</div>{% endif %}
+        {% for issue in t.issues %}
+        <div class="vc-tool vc-bad">⚠ {% if issue.recovery %}recovery {% endif %}{{ issue.kind }}: {{ issue.reason }}{% if issue.message %} ({{ issue.message }}){% endif %}</div>
+        {% endfor %}
     </div>
     {% empty %}
     <div class="vc-msg">Nothing was said.</div>

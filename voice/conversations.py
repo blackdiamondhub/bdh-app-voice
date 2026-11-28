@@ -18,6 +18,11 @@ cut) and ``unknown`` when the app stopped mid-conversation and the record was
 recovered on the next start. A consumer (the sentinel app) must never treat
 missing data as evidence.
 
+A turn's ``issues`` say why the model dropped or cut it, e.g.
+``{"kind": "response_incomplete", "reason": "content_filter"}`` or
+``{"kind": "transcription_failed", "reason": ...}`` (``"recovery": true`` on
+the short reply telling the user so). Records from before 0.3.0b2 have none.
+
 Final events are live only, so a consumer that was down can ask for them
 again: it publishes ``sentinel/sync`` with ``{"since": <ISO time>}`` and the
 recorder re-publishes the final records that ended since then (``replay``).
@@ -76,6 +81,7 @@ _CONV_COLUMNS = (
 CONV_FIELDS = tuple(name for name, _ in _CONV_COLUMNS)
 
 _db_lock = threading.RLock()
+_migrated = set()  # database paths whose tables are up to date
 
 
 def private(stay):
@@ -133,7 +139,12 @@ def _connect():
     db.execute("CREATE INDEX IF NOT EXISTS conversations_started ON conversations (started_at)")
     db.execute("CREATE INDEX IF NOT EXISTS conversations_ended ON conversations (ended_at)")
     db.execute("CREATE TABLE IF NOT EXISTS turns (conversation_id TEXT, seq INTEGER, at TEXT, "
-               "user TEXT, assistant TEXT, tools TEXT, PRIMARY KEY (conversation_id, seq))")
+               "user TEXT, assistant TEXT, tools TEXT, issues TEXT, "
+               "PRIMARY KEY (conversation_id, seq))")
+    if str(p) not in _migrated:
+        if "issues" not in {r[1] for r in db.execute("PRAGMA table_info(turns)")}:
+            db.execute("ALTER TABLE turns ADD COLUMN issues TEXT")  # databases from before 0.3.0b2
+        _migrated.add(str(p))
     return db
 
 
@@ -177,22 +188,24 @@ def _insert_turn(conversation_id, turn):
         db = _connect()
         try:
             with db:
-                db.execute("INSERT OR REPLACE INTO turns (conversation_id, seq, at, user, assistant, tools) "
-                           "VALUES (?, ?, ?, ?, ?, ?)",
+                db.execute("INSERT OR REPLACE INTO turns (conversation_id, seq, at, user, assistant, tools, "
+                           "issues) VALUES (?, ?, ?, ?, ?, ?, ?)",
                            (conversation_id, turn["seq"], turn["at"], turn["user"], turn["assistant"],
-                            json.dumps(turn["tools"], default=str)))
+                            json.dumps(turn["tools"], default=str),
+                            json.dumps(turn.get("issues") or [], default=str)))
         finally:
             db.close()
 
 
 def _turns(conversation_id):
     out = []
-    for r in _query("SELECT seq, at, user, assistant, tools FROM turns WHERE conversation_id = ? "
+    for r in _query("SELECT seq, at, user, assistant, tools, issues FROM turns WHERE conversation_id = ? "
                     "ORDER BY seq", (conversation_id,)):
-        try:
-            r["tools"] = json.loads(r["tools"] or "[]")
-        except ValueError:
-            r["tools"] = []
+        for field in ("tools", "issues"):
+            try:
+                r[field] = json.loads(r[field] or "[]")
+            except ValueError:
+                r[field] = []
         out.append(r)
     return out
 
@@ -428,7 +441,7 @@ class Recorder:
             log.exception("could not store a conversation turn")
         _publish({**header, "kind": "turn", "conversation_id": conversation_id, "seq": turn["seq"],
                   "turn": turn["seq"], "at": turn["at"], "user": turn["user"],
-                  "assistant": turn["assistant"], "tools": turn["tools"]})
+                  "assistant": turn["assistant"], "tools": turn["tools"], "issues": turn.get("issues") or []})
 
     def _store_finish(self, conversation_id, summary):
         self._open.discard(conversation_id)
