@@ -1,0 +1,55 @@
+{% extends 'hub_settings/_layout.html' %}
+
+{% block title %}Conversation{% endblock %}
+
+{% block section %}
+<style>
+    .vc-meta { display: grid; grid-template-columns: max-content 1fr; gap: 6px 18px; padding: 14px 12px; font-size: 14px; }
+    .vc-meta dt { color: var(--mut); }
+    .vc-meta dd { margin: 0; }
+    .vc-turn { padding: 12px; border-bottom: 1px solid var(--line); font-size: 14.5px; line-height: 1.5; }
+    .vc-turn:last-child { border-bottom: 0; }
+    .vc-turn small { color: var(--mut); }
+    .vc-who { color: var(--mut); font-weight: 600; margin-right: 6px; }
+    .vc-tool { font-family: ui-monospace, monospace; font-size: 12.5px; color: #cfe4fa; margin: 4px 0 0 16px; word-break: break-word; }
+    .vc-bad { color: var(--red); }
+    .vc-partial { color: var(--red); font-weight: 600; }
+    .vc-msg { color: var(--mut); padding: 14px 12px; font-size: 14px; }
+    .vc-head { flex-wrap: wrap; align-items: center; }
+    .vc-head > div { flex: 1 1 320px; min-width: 0; }
+    .vc-head .vc-ico { flex: 0 0 auto; display: grid; place-items: center; padding: 0 16px; text-decoration: none; }
+</style>
+
+<div class="hst-head vc-head">
+    <a class="hst-btn ghost vc-ico" href="{% url 'voice_conversations' %}" aria-label="Back to Conversations"><i class="fas fa-chevron-left" aria-hidden="true"></i></a>
+    <div>
+        <h2>Conversation on {{ c.screen }}</h2>
+        <p>{{ c.started_local }} ({{ timezone }}) · {{ c.stay_name }}</p>
+    </div>
+</div>
+
+<div class="hst-card"><dl class="vc-meta">
+    <dt>Conversation</dt><dd>{{ c.id }}</dd>
+    <dt>Gateway session</dt><dd>{{ c.sid|default:"none" }} ({{ c.mode|default:"no gateway" }})</dd>
+    <dt>Model</dt><dd>{{ c.model }}</dd>
+    <dt>Ended</dt><dd>{% if c.final %}{{ c.end_reason }}{% if c.seconds %} after {{ c.seconds|floatformat:0 }} s{% endif %}{% else %}in progress{% endif %}</dd>
+    <dt>Turns</dt><dd>{{ c.turn_count|default:0 }} ({{ c.user_turns|default:0 }} spoken, {{ c.replies|default:0 }} replies, {{ c.tool_calls|default:0 }} tool calls)</dd>
+    <dt>Record</dt><dd>{% if c.completeness == "complete" %}Complete{% else %}<span class="vc-partial">{{ c.completeness|capfirst }}</span>{% if c.missing %} ({{ c.missing|join:", " }}){% endif %}{% endif %}</dd>
+    <dt>Deleted after</dt><dd>{{ c.expires_local }}</dd>
+</dl></div>
+
+<div class="hst-card" style="margin-top:14px">
+    {% for t in c.turns %}
+    <div class="vc-turn">
+        <small>#{{ t.seq }} · {{ t.at_local }}</small>
+        {% if t.user %}<div><span class="vc-who">Heard</span>{{ t.user }}</div>{% endif %}
+        {% for tool in t.tools %}
+        <div class="vc-tool{% if not tool.ok %} vc-bad{% endif %}">→ {{ tool.name }} {{ tool.args|default_if_none:"(bad arguments)" }}{% if tool.ok %} ✓{% if tool.result %} {{ tool.result }}{% endif %}{% else %} ✗ {{ tool.error }}{% endif %}</div>
+        {% endfor %}
+        {% if t.assistant %}<div><span class="vc-who">Assistant</span>{{ t.assistant }}</div>{% endif %}
+    </div>
+    {% empty %}
+    <div class="vc-msg">Nothing was said.</div>
+    {% endfor %}
+</div>
+{% endblock %}

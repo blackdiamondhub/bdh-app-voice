@@ -2,8 +2,9 @@ from bdh_sdk import PluginSpec, Setting, SettingsPage
 from bdh_sdk.plugins import BOOL, CHOICE, INT, LIFECYCLE_ALWAYS, NETWORK_LAN, SECRET, STR
 
 from .config import (DEFAULT_COLLECT_THRESHOLD, DEFAULT_ENDPOINT, DEFAULT_FOLLOW_UP,
-                     DEFAULT_MAX_CLIPS, DEFAULT_MAX_SECONDS, DEFAULT_MODEL, DEFAULT_VOICE, MODELS,
-                     VOICES)
+                     DEFAULT_MAX_CLIPS, DEFAULT_MAX_SECONDS, DEFAULT_MODEL,
+                     DEFAULT_TRANSCRIPT_DAYS, DEFAULT_TRANSCRIPT_GUEST_DAYS, DEFAULT_VOICE,
+                     MODELS, VOICES)
 from .detector import WAKE_WORDS
 
 spec = PluginSpec(
@@ -61,6 +62,14 @@ spec = PluginSpec(
                 help="So \"here\" means something, e.g. \"the great room on the main floor, by the "
                      "Living Room Fireplace\". Several screens: \"192.168.10.195=great room; "
                      "192.168.10.196=kitchen\"."),
+        Setting("transcript_guest_days", "Keep guest conversations", INT,
+                DEFAULT_TRANSCRIPT_GUEST_DAYS, minimum=0, maximum=365, unit="days",
+                help="Transcripts of conversations during a guest stay are kept on the hub, for "
+                     "admins only, until this many days after the guests check out."),
+        Setting("transcript_days", "Keep other conversations", INT, DEFAULT_TRANSCRIPT_DAYS,
+                minimum=1, maximum=365, unit="days",
+                help="Transcripts of conversations during owner stays and between stays, kept "
+                     "this many days for admins only."),
     ),
     # Admins only: connected screens, live levels and recent detections.
     settings_pages=(
@@ -69,12 +78,17 @@ spec = PluginSpec(
         SettingsPage("Wake-word clips", "voice_dataset",
                      subtitle="Review, label and download training clips",
                      icon="fas fa-wave-square"),
+        SettingsPage("Conversations", "voice_conversations",
+                     subtitle="What was said to the assistant and what it did",
+                     icon="fas fa-comments"),
     ),
     api_version=2,
     # tools: the assistant acts through the hub's tools gateway (guest or
     # dashboard mode, never owner). Events on voice/# need no permission.
-    # stays.read: no training clips are collected while guests stay (by default).
-    permissions=("tools", "stays.read"),
+    # stays.read: no training clips are collected while guests stay (by default), and
+    # transcripts stay out of the log then.
+    # events.subscribe:sentinel/sync: the sentinel asks for conversation records it missed.
+    permissions=("tools", "stays.read", "events.subscribe:sentinel/sync"),
     # The kiosks reach the app through the hub; the realtime API is on the
     # internet. Host networking (lan) also reaches it directly; if an admin
     # hasn't allowed lan the app runs as outbound and goes through the proxy.

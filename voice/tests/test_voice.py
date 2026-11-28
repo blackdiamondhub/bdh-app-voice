@@ -11,7 +11,7 @@ from django.contrib.auth.models import User
 from django.test import SimpleTestCase, TestCase, override_settings
 from django.urls import reverse
 
-from voice import clips, config, dataset, listen
+from voice import clips, config, conversations, dataset, listen
 from voice.detector import CHUNK, SAMPLE_RATE, Detector, read_wav, score_clip
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -151,6 +151,11 @@ class _DataDir:
         p.start()
         self.addCleanup(p.stop)
         self.addCleanup(self.writer.flush)  # before the data directory goes
+        self.recorder = conversations.Recorder(settings=lambda: self.cfg)
+        p = patch.object(conversations, "recorder", self.recorder)
+        p.start()
+        self.addCleanup(p.stop)
+        self.addCleanup(self.recorder.flush)
 
 
 class FakeStays:

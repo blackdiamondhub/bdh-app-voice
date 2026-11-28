@@ -17,7 +17,7 @@ from bdh_sdk.tools import Tool, ToolError
 from django.test import SimpleTestCase
 from websockets.asyncio.server import serve
 
-from voice import assistant, config, dataset, listen
+from voice import assistant, config, conversations, dataset, listen
 from voice.audio import Resampler
 from voice.detector import CHUNK, SAMPLE_RATE, read_wav
 from voice.plugin import spec
@@ -215,10 +215,11 @@ class _Assistant(_DataDir):
         cfg.setdefault("max_seconds", 30)
         self.cfg = config.Config(endpoint=rt.url, **cfg)
 
-    def published(self):
+    def published(self, kind="turn"):
+        self.assertTrue(self.recorder.flush())
         rpc.flush()
         return [p["data"] for p in self.broker.ops("events.publish")
-                if p["topic"] == assistant.EVENT_TOPIC]
+                if p["topic"] == assistant.EVENT_TOPIC and p["data"].get("kind") == kind]
 
 
 class ConversationTests(_Assistant, SimpleTestCase):
@@ -314,15 +315,28 @@ class ConversationTests(_Assistant, SimpleTestCase):
         self.assertLess(trunc["audio_end_ms"], 2000)
         self.assertEqual(len(rt.events("response.cancel")), 1)
 
-        # The turn was published for the supervisor (not on assistant/...).
+        # The turn was stored, then published for the sentinel (not on assistant/...).
         turns = self.published()
         self.assertEqual(len(turns), 1)
         self.assertEqual(turns[0]["user"], "Turn on the fireplace")
         self.assertEqual(turns[0]["assistant"], "The fireplace is on.")
-        self.assertEqual(turns[0]["tools"], [{"name": "fireplace_on", "args": {"level": 3}, "ok": True}])
+        self.assertEqual(turns[0]["tools"], [{
+            "name": "fireplace_on", "args": {"level": 3}, "ok": True,
+            "result": json.dumps({"ok": True, "result": {"level": 3, "on": True}})}])
         self.assertEqual(turns[0]["screen"], "192.168.10.50")
         self.assertTrue(turns[0]["sid"])
+        self.assertEqual(turns[0]["seq"], 1)
         self.assertEqual(assistant._active, {})
+
+        # ...and the whole conversation once it ended.
+        [final] = self.published("final")
+        self.assertEqual(final["conversation_id"], turns[0]["conversation_id"])
+        self.assertEqual((final["completeness"], final["end_reason"], final["turn_count"],
+                          final["tool_calls"], final["stay"], final["mode"]),
+                         ("complete", "idle", 1, 1, "none", "dashboard"))
+        self.assertEqual([t["seq"] for t in final["turns"]], [1])
+        self.assertEqual(conversations.get(final["conversation_id"])["turns"][0]["user"],
+                         "Turn on the fireplace")
 
         # The wake's training clip learned how the conversation went.
         self.assertTrue(self.writer.flush())
@@ -406,6 +420,12 @@ class ConversationTests(_Assistant, SimpleTestCase):
         self.assertEqual(self.broker.tool_calls, [])
         self.assertEqual(rt.events("conversation.item.create"), [])
         self.assertEqual(rt.events("response.create"), [])
+        # ...but end_conversation counts as a tool call in the record.
+        [final] = self.published("final")
+        self.assertEqual(final["tool_calls"], 2)
+        self.assertEqual([[t["name"] for t in turn["tools"]] for turn in final["turns"]],
+                         [["end_conversation"], ["end_conversation"]])
+        self.assertEqual([t["seq"] for t in final["turns"]], [1, 2])
 
     def test_wake_detection_paused_during_a_conversation(self):
         self.hits = (3, 40)  # 40 is 3.2 s in, well past the debounce
@@ -477,6 +497,80 @@ class ConversationTests(_Assistant, SimpleTestCase):
         end = asyncio.run(go())
         self.assertEqual(end["reason"], "error")
         self.assertTrue(end["message"])
+
+
+class RecordTests(_Assistant, SimpleTestCase):
+    """What the log and the record keep, depending on who is staying."""
+
+    SAID = "it's freezing, put the fireplace on"
+    REPLY = "The fireplace is on."
+
+    def talk(self):
+        async def script(rt, ws):
+            await rt.send(ws, "conversation.item.input_audio_transcription.completed", item_id="u1",
+                          content_index=0, transcript=self.SAID)
+            await reply(rt, ws, "r1", "a1", self.REPLY, b"\x01\x00" * 480)
+
+        async def go():
+            async with FakeRealtime(script) as rt:
+                self.use(rt)
+                async with Kiosk() as kiosk:
+                    kiosk.push(tone(0.5))
+                    await kiosk.wait_for("conversation_end")
+
+        with self.assertLogs("voice", "INFO") as logs:
+            asyncio.run(go())
+        return "\n".join(logs.output)
+
+    def test_guest_stay_keeps_the_words_out_of_the_log(self):
+        self.stays.guest = True
+        out = self.talk()
+        self.assertNotIn("freezing", out)
+        self.assertNotIn(self.REPLY, out)
+        self.assertIn(f"user: ({len(self.SAID)} chars, conversation ", out)
+        self.assertIn(f"assistant: ({len(self.REPLY)} chars, conversation ", out)
+        # The record (admins only) still has them.
+        [final] = self.published("final")
+        self.assertEqual(final["stay"], "guest")
+        self.assertEqual(final["turns"][0]["user"], self.SAID)
+        self.assertEqual(final["completeness"], "complete")
+
+    def test_unknown_stay_is_treated_like_a_guest_stay(self):
+        with patch("voice.conversations.stay_info", side_effect=RuntimeError("no broker")):
+            out = self.talk()
+        self.assertNotIn("freezing", out)
+        [final] = self.published("final")
+        self.assertEqual(final["stay"], "unknown")
+
+    def test_owner_stay_logs_the_words(self):
+        owners = {"stay": "owner", "stay_key": "s1", "stay_checkout": ""}
+        with patch("voice.conversations.stay_info", return_value=owners):
+            out = self.talk()
+        self.assertIn(f"user: {self.SAID}", out)
+        self.assertIn(f"assistant: {self.REPLY}", out)
+        [final] = self.published("final")
+        self.assertEqual((final["stay"], final["stay_key"]), ("owner", "s1"))
+
+    def test_between_stays_logs_the_words(self):
+        out = self.talk()
+        self.assertIn(f"user: {self.SAID}", out)
+
+    def test_a_cut_text_makes_the_record_partial(self):
+        self.SAID = "x" * (conversations.MAX_TEXT + 10)
+        self.talk()
+        [final] = self.published("final")
+        self.assertEqual(final["completeness"], "partial")
+        self.assertIn("text_cut", final["missing"])
+        self.assertEqual(len(final["turns"][0]["user"]), conversations.MAX_TEXT)
+
+    def test_a_failed_write_makes_the_record_partial(self):
+        with patch("voice.conversations._insert_turn", side_effect=OSError("disk full")):
+            self.talk()
+            [final] = self.published("final")
+        self.assertEqual(final["completeness"], "partial")
+        self.assertIn("write_failed", final["missing"])
+        # The turn still reached the bus.
+        self.assertEqual(self.published()[0]["seq"], 1)
 
 
 class GatewayRefusedTests(_Assistant, SimpleTestCase):
@@ -580,9 +674,11 @@ class HelperTests(SimpleTestCase):
     def test_load_reads_every_setting(self):
         # The other tests replace config.load, so run the real one end to end.
         stored = {"listen": "false", "threshold": "70", "model": "gpt-realtime-2.1",
-                  "screen_rooms": " the great room "}
+                  "screen_rooms": " the great room ", "transcript_guest_days": "3",
+                  "transcript_days": "900"}
         with patch("voice.config.app_setting", side_effect=lambda app, key, default: stored.get(key, default)):
             cfg = config.load()
+        self.assertEqual((cfg.transcript_guest_days, cfg.transcript_days), (3, 365))
         self.assertFalse(cfg.listen)
         self.assertEqual(cfg.threshold, 0.7)
         self.assertEqual(cfg.model, "gpt-realtime-2.1")

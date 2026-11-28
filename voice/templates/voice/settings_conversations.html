@@ -1,0 +1,62 @@
+{% extends 'hub_settings/_layout.html' %}
+
+{% block title %}Conversations{% endblock %}
+
+{% block section %}
+<style>
+    .vc-tbl { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+    .vc-tbl th { text-align: left; color: var(--mut); font-weight: 500; font-size: 13px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .vc-tbl td { padding: 9px 12px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+    .vc-tbl tr:last-child td { border-bottom: 0; }
+    .vc-tbl .num { text-align: right; font-variant-numeric: tabular-nums; }
+    .vc-tbl small { color: var(--mut); }
+    .vc-tbl a { color: inherit; }
+    .vc-msg { color: var(--mut); padding: 14px 12px; font-size: 14px; line-height: 1.55; }
+    .vc-partial { color: var(--red); font-weight: 600; }
+    .vc-pages { display: flex; gap: 10px; justify-content: flex-end; margin: 12px 4px; }
+    .vc-head { flex-wrap: wrap; align-items: center; }
+    .vc-head > div { flex: 1 1 320px; min-width: 0; }
+    .vc-head .vc-ico { flex: 0 0 auto; display: grid; place-items: center; padding: 0 16px; text-decoration: none; }
+</style>
+
+<div class="hst-head vc-head">
+    <a class="hst-btn ghost vc-ico" href="{% url 'voice_status' %}" aria-label="Back to Voice"><i class="fas fa-chevron-left" aria-hidden="true"></i></a>
+    <div>
+        <h2>Conversations</h2>
+        <p>
+            What was said to the assistant and what it did, for admins only. Kept until {{ cfg.transcript_guest_days }} day{{ cfg.transcript_guest_days|pluralize }}
+            after a guest stay's checkout, otherwise {{ cfg.transcript_days }} day{{ cfg.transcript_days|pluralize }}. Times are {{ timezone }}.
+        </p>
+    </div>
+</div>
+
+<div class="hst-card">
+    {% if items %}
+    <table class="vc-tbl">
+        <thead><tr><th>Started</th><th>Screen</th><th>Stay</th><th class="num">Turns</th><th class="num">Tools</th><th>Ended</th><th>Record</th></tr></thead>
+        <tbody>
+        {% for c in items %}
+        <tr>
+            <td><a href="{% url 'voice_conversation' c.id %}">{{ c.started_local }}</a></td>
+            <td>{{ c.screen }}<br><small>{{ c.mode|default:"no gateway" }}</small></td>
+            <td>{{ c.stay_name }}</td>
+            <td class="num">{{ c.turn_count|default:0 }}</td>
+            <td class="num">{{ c.tool_calls|default:0 }}</td>
+            <td>{% if c.final %}{{ c.end_reason }}{% if c.seconds %}<br><small>{{ c.seconds|floatformat:0 }} s</small>{% endif %}{% else %}<small>in progress</small>{% endif %}</td>
+            <td>{% if not c.final %}<small>open</small>{% elif c.completeness == "complete" %}Complete{% else %}<span class="vc-partial">{{ c.completeness|capfirst }}</span>{% endif %}</td>
+        </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <div class="vc-msg">No conversations yet. They appear here after someone talks to the assistant.</div>
+    {% endif %}
+</div>
+
+{% if prev_page or next_page %}
+<div class="vc-pages">
+    {% if prev_page %}<a class="hst-btn ghost" style="text-decoration:none" href="?page={{ prev_page }}">‹ Newer</a>{% endif %}
+    {% if next_page %}<a class="hst-btn ghost" style="text-decoration:none" href="?page={{ next_page }}">Older ›</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}
